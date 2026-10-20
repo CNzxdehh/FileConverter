@@ -13,9 +13,9 @@ if /i "%1"=="/purge" set "OPT=--purge"
 if /i "%1"=="/清除配置" set "OPT=--purge"
 
 set "EXE=%~dp0FileConverter.exe"
-if exist "%EXE%" goto USE_EXE
+if exist "%EXE%" goto HAS_EXE
 set "EXE=%~dp0dist\FileConverter.exe"
-if exist "%EXE%" goto USE_EXE
+if exist "%EXE%" goto HAS_EXE
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -24,25 +24,22 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-set "RUN=python %~dp0src\converter.py"
-goto STEP1
+echo   [1/2] 删除右键菜单与 COM 扩展...
+python "%~dp0src\converter.py" uninstall %OPT%
+goto RESTART
 
-:USE_EXE
-set "RUN="%EXE%""
+:HAS_EXE
+echo   [1/2] 删除右键菜单与 COM 扩展...
+"%EXE%" uninstall %OPT%
 
-:STEP1
-echo   [1/3] 删除右键菜单...
-%RUN% uninstall %OPT%
-
-echo   [2/3] 还原 Windows 11 默认的紧凑右键菜单...
-%RUN% classic off
-
-echo   [3/3] 重启资源管理器...
+:RESTART
+echo   [2/2] 重启资源管理器...
 taskkill /f /im explorer.exe >nul 2>nul
 start "" explorer.exe
 
 echo.
-echo   已清理右键菜单、经典菜单开关与临时文件，没有后台进程残留。
+echo   已清理右键菜单、COM 注册与临时文件，没有后台进程残留。
+echo   菜单样式已还原成 Windows 11 默认。
 echo   如需连配置一起删除，运行：uninstall.bat /purge
 echo.
 pause

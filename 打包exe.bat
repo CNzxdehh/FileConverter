@@ -15,7 +15,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo   [1/3] 检查依赖...
+echo   [1/4] 检查依赖...
 python -c "import PyInstaller" >nul 2>nul
 if errorlevel 1 (
     echo         正在安装打包依赖 PyInstaller...
@@ -27,16 +27,30 @@ if errorlevel 1 (
     python -m pip install -q --disable-pip-version-check -r requirements.txt
 )
 
-echo   [2/3] 生成程序图标...
+echo   [2/4] 生成程序图标与 COM 菜单项表...
 python "%~dp0tools\make_icon.py"
+python "%~dp0native\gen_verbs.py"
 
-echo   [3/3] 打包中，请稍候（约 1-3 分钟）...
+echo   [3/4] 编译 COM 外壳扩展（一级右键菜单，需要 MinGW gcc）...
+if exist "%~dp0native\build_native.bat" (
+    call "%~dp0native\build_native.bat"
+) else (
+    echo         跳过：没有 native\build_native.bat
+)
+
+echo   [4/4] 打包 exe，请稍候（约 1-3 分钟）...
 python -m PyInstaller --noconfirm --clean "%~dp0build.spec"
+
+if exist "%~dp0native\FileConvMenu.dll" (
+    copy /y "%~dp0native\FileConvMenu.dll" "%~dp0dist\FileConvMenu.dll" >nul
+    echo         已附带 FileConvMenu.dll（一级菜单用）
+)
 
 echo.
 if exist "%~dp0dist\FileConverter.exe" (
     echo   完成：%~dp0dist\FileConverter.exe
     for %%A in ("%~dp0dist\FileConverter.exe") do echo   大小：%%~zA 字节
+    echo   发布时请把 dist 下的 exe + dll 两个文件一起带上。
 ) else (
     echo   [失败] 没有生成 exe，请看上面的错误信息。
 )

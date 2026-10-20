@@ -104,25 +104,23 @@ FileConverter.exe uninstall --purge:: 连配置一起删
 > 在文件上右键 → 点最下面的**显示更多选项** → 就能看到【转换文件格式】。
 > 这是 Windows 11 对静态菜单项的限制，只有 COM 外壳扩展才能进一级菜单。
 
-### 让菜单出现在 Win11「一级菜单」
+### 一级菜单（COM 外壳扩展）
 
-Windows 11 的紧凑右键菜单**只认 IExplorerCommand 的 COM 外壳扩展**（要一个编译好的 DLL），
-纯注册表写法进不去。本工具提供的做法是可逆的注册表开关：把右键菜单切回 **Windows 10 风格的完整菜单**，
-这样【转换文件格式】就直接在一级菜单里，不用再点「显示更多选项」。
+Windows 11 的紧凑右键菜单**只认 `IExplorerCommand` 的 COM 外壳扩展**，纯注册表进不去。
+本工具自带一个 57 KB 的原生 COM DLL（`native/FileConvMenu.c`，纯 C、无依赖、x64）：
+
+- `install` 会注册 CLSID + 在 `*` 和 `Directory` 上挂 `ExplorerCommandHandler`；
+- 文件和**文件夹**右键都能看到【转换文件格式】，悬停展开 17 种转换；
+- 注册完会**自检**：真的 `CoCreateInstance` 一次并读标题，通过才算成功；
+- 如果自检失败（缺 DLL / 被安全软件拦），自动**回退**到经典级联菜单 + 经典菜单样式；
+- 卸载时注销 COM、还原 Windows 11 默认菜单。
 
 ```bat
-FileConverter.exe classic on     :: 切到经典完整菜单（一级可见）
-FileConverter.exe classic off    :: 还原 Win11 默认紧凑菜单
+FileConverter.exe install              :: 装（优先 COM 一级菜单）
+FileConverter.exe install --cascade    :: 强制用经典级联菜单方案
+FileConverter.exe classic on|off       :: 手动切经典完整菜单 / 还原
+python tools	est_com.py               :: 单独验证 COM 对象（标题/图标/子项）
 ```
-
-- `install.bat` 会自动执行 `classic on` 并重启资源管理器；
-- 想还原默认样式：双击目录里的 **`还原菜单样式.bat`**；
-- `uninstall.bat` 卸载时会自动 `classic off`，不会把你的系统留在改过的状态。
-
-> 注意：切到经典菜单后，**所有软件**的经典菜单项都会回到一级菜单（菜单会变长），这是这个开关的全局效果。
-> 如果你只想让本工具单独进一级菜单，那必须写 COM 外壳扩展（`IExplorerCommand` + `IEnumExplorerCommand`），
-> 需要能编译 DLL 的环境（VS / .NET SDK）。源码结构已经预留好：菜单项全部来自
-> `core/tasks.py` 的 `VERB_ORDER`，COM 版照着它生成子命令即可。
 
 ### ffmpeg（音视频转换必需）
 
@@ -251,7 +249,7 @@ set FC_EXE=dist\FileConverter.exe
 python src\selftest.py
 ```
 
-**本机实测结果**（Windows 11 build 26200 + ffmpeg 9.0.2）：对部署好的 exe 跑 **38/38 通过**，
+**本机实测结果**（Windows 11 build 26200 + ffmpeg 9.0.2）：对部署好的 exe 跑 **41/41 通过**，
 含"菜单真的出现在右键菜单里（Explorer 动词枚举）""多选合并""runm 直传"等回归用例。
 安装 → 注册表写入 → 卸载 → 无残留，全部验证过。
 

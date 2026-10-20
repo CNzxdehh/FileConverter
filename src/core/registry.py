@@ -125,6 +125,13 @@ def install(lean: bool = False) -> dict:
     return {"items": len(items), "target": launcher()}
 
 
+def remove_cascade() -> None:
+    """删掉经典级联菜单（COM 模式时用不到，避免右键里出现两份）。"""
+    _delete_tree(HIVE, PARENT_KEY)
+    for name, _, _ in menu_items():
+        _delete_tree(HIVE, f"{CMD_STORE}\\{name}")
+
+
 def uninstall(remove_config: bool = False) -> dict:
     removed = {"menu": False, "verbs": 0}
 
@@ -194,6 +201,106 @@ def set_classic_menu(enable: bool) -> bool:
 
 def classic_menu_on() -> bool:
     return key_exists(CLASSIC_KEY)
+
+
+# -------------------------------------------------------------------------- #
+# Win11 一级菜单：IExplorerCommand COM 外壳扩展
+# -------------------------------------------------------------------------- #
+CLSID_COM = "{7B3F9A12-4C6D-4E21-9A3B-112233445566}"
+COM_DLL_NAME = "FileConvMenu.dll"
+COM_VERB_KEY = "FileConvModern"
+# 文件用 *；文件夹用 Directory（这样右键文件夹也能看到）
+COM_TARGETS = (r"*", "Directory")
+
+
+def com_dll_path() -> Path:
+    """COM DLL 位置：正式安装时在 exe 旁边；源码模式下用仓库里的 native/。"""
+    cand = Path(exe_path()).parent / COM_DLL_NAME
+    if cand.is_file():
+        return cand
+    root = Path(__file__).resolve().parents[2]     # src/core/registry.py → 项目根
+    alt = root / "native" / COM_DLL_NAME
+    return alt if alt.is_file() else cand
+
+
+def install_com() -> dict:
+    """注册 COM 外壳扩展 + 挂到 * 和 Directory 上（不写 SubCommands，见上面教训）。"""
+    dll = com_dll_path()
+    if not dll.is_file():
+        return {"ok": False, "reason": f"找不到 {COM_DLL_NAME}（应放在 {dll.parent}）"}
+
+    clsid_key = rf"Software\Classes\CLSID\{CLSID_COM}"
+    _set_str(HIVE, clsid_key, "", "FileConverter 转换文件格式")
+    _set_str(HIVE, clsid_key + r"\InprocServer32", "", str(dll))
+    _set_str(HIVE, clsid_key + r"\InprocServer32", "ThreadingModel", "Apartment")
+
+    icon = exe_path()
+    for target in COM_TARGETS:
+        base = rf"Software\Classes\{target}\shell\{COM_VERB_KEY}"
+        _set_str(HIVE, base, "", MENU_NAME)
+        _set_str(HIVE, base, "MUIVerb", MENU_NAME)
+        _set_str(HIVE, base, "Icon", f'"{icon}",0')
+        _set_str(HIVE, base, "ExplorerCommandHandler", CLSID_COM)
+        _set_str(HIVE, base, "CommandStateSync", "")   # 官方示例里的配套值
+        _set_str(HIVE, base, "Position", "Top")        # 放在菜单靠前位置
+        _del_value(HIVE, base, "SubCommands")
+
+    return {"ok": True, "dll": str(dll)}
+
+
+def remove_com() -> None:
+    _delete_tree(HIVE, rf"Software\Classes\CLSID\{CLSID_COM}")
+    for target in COM_TARGETS:
+        _delete_tree(HIVE, rf"Software\Classes\{target}\shell\{COM_VERB_KEY}")
+
+
+def com_registered() -> bool:
+    return key_exists(rf"Software\Classes\CLSID\{CLSID_COM}\InprocServer32")
+
+
+def com_verify() -> tuple[bool, str]:
+    """真正实例化一次 COM 对象并取标题，确认 Explorer 里也能加载。"""
+    import ctypes
+    import uuid
+
+    ole32 = ctypes.WinDLL("ole32")
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("d1", ctypes.c_ulong), ("d2", ctypes.c_ushort),
+                    ("d3", ctypes.c_ushort), ("d4", ctypes.c_ubyte * 8)]
+
+    def mk(s: str) -> GUID:
+        u = uuid.UUID(s)
+        g = GUID()
+        g.d1, g.d2, g.d3 = u.fields[0], u.fields[1], u.fields[2]
+        for i, b in enumerate(u.bytes[8:]):
+            g.d4[i] = b
+        return g
+
+    ole32.CoInitialize(None)
+    p = ctypes.c_void_p()
+    hr = ole32.CoCreateInstance(ctypes.byref(mk(CLSID_COM)), None, 1,
+                               ctypes.byref(mk("{00000000-0000-0000-C000-000000000046}")),
+                               ctypes.byref(p))
+    if hr != 0 or not p:
+        ole32.CoUninitialize()
+        return False, f"CoCreateInstance 失败 (0x{hr & 0xFFFFFFFF:08X})"
+    try:
+        vtbl = ctypes.cast(p, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))
+        fn = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p,
+                                ctypes.POINTER(ctypes.c_void_p))(vtbl.contents[3])
+        out = ctypes.c_void_p()
+        hr2 = fn(p, None, ctypes.byref(out))
+        title = ctypes.wstring_at(out) if out else ""
+        if out:
+            ole32.CoTaskMemFree(ctypes.cast(out, ctypes.c_void_p))
+        fn_rel = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl.contents[2])
+        fn_rel(p)
+        if hr2 != 0 or not title:
+            return False, f"GetTitle 失败 (0x{hr2 & 0xFFFFFFFF:08X})"
+        return True, title
+    finally:
+        ole32.CoUninitialize()
 
 
 def is_installed() -> bool:

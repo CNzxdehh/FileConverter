@@ -311,31 +311,48 @@ def menu_visible() -> bool | None:
 
 
 def test_registry_dry() -> None:
-    print("\n== 注册表读写 ==")
+    print("\n== 注册表 / COM 扩展 ==")
     from core import registry
 
-    was_installed = registry.is_installed()
+    was_installed = registry.is_installed() or registry.com_registered()
 
     run_cli([*CLI, "install"])
-    installed = registry.is_installed()
-    case("install → 父菜单写入", installed)
-    case("install → 子菜单项写入",
-         registry.key_exists(registry.PARENT_KEY + r"\shell\FileConv.vid2mp4"))
-    case("install → 父键没有 SubCommands（有就不显示，踩过）",
-         not registry._has_value(registry.PARENT_KEY, "SubCommands"))
+    case("install → COM 外壳扩展已注册", registry.com_registered())
+    ok, msg = registry.com_verify()
+    case("install → COM 对象可实例化且标题正确", ok, str(msg))
+    case("install → 挂在文件(*)和文件夹(Directory)上",
+         registry.key_exists(r"Software\Classes\*\shell\FileConvModern")
+         and registry.key_exists(r"Software\Classes\Directory\shell\FileConvModern"))
+    case("install → 菜单样式已还原为 Win11 默认", not registry.classic_menu_on())
 
-    visible = menu_visible()
-    if visible is None:
-        print("  [SKIP] Explorer 菜单可见性（本机没有 pywin32）")
-    else:
-        case("菜单真的出现在右键菜单里（Explorer 枚举）", bool(visible))
+    # COM 版本的菜单项不会出现在 Shell.Application 的 Verbs() 枚举里
+    #（Verbs 只覆盖旧式 verb），所以这里改为验证：注册值正确 + DLL 能被加载。
+    verb_key = r"Software\Classes\*\shell\FileConvModern"
+    handler_ok = False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, verb_key) as h:
+            handler_ok = winreg.QueryValueEx(h, "ExplorerCommandHandler")[0].upper() == \
+                registry.CLSID_COM.upper()
+    except OSError:
+        handler_ok = False
+    case("菜单键的 ExplorerCommandHandler 指向我们的 CLSID", handler_ok)
+
+    dll_ok, dll_msg = False, ""
+    try:
+        import ctypes
+
+        ctypes.WinDLL(str(registry.com_dll_path()))
+        dll_ok, dll_msg = True, "LoadLibrary 成功（无缺失依赖）"
+    except Exception as e:
+        dll_msg = str(e)[:120]
+    case("外壳扩展 DLL 可加载", dll_ok, dll_msg)
 
     run_cli([*CLI, "uninstall"])
-    case("uninstall → 父菜单删除", not registry.is_installed())
-    leftover = [n for n, _, _ in registry.menu_items()
-                if registry.key_exists(registry.PARENT_KEY + "\\shell\\" + n)
-                or registry.key_exists(registry.CMD_STORE + "\\" + n)]
-    case("uninstall → 无残留", not leftover, str(leftover))
+    case("uninstall → COM 已注销", not registry.com_registered())
+    case("uninstall → 级联菜单已删除", not registry.is_installed())
+    case("uninstall → 菜单样式已还原", not registry.classic_menu_on())
 
     if was_installed:      # 别把用户已经装好的菜单测没了
         run_cli([*CLI, "install"])

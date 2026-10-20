@@ -171,6 +171,21 @@ def do_run(verb: str, raw_files: list[str], skip_collect: bool = False) -> int:
         if p.exists():
             files.append(p)
 
+    # 右键文件夹：把它当成"这个文件夹里所有能转的文件"
+    dirs = [p for p in files if p.is_dir()]
+    dir_count = 0
+    if dirs:
+        expanded: list[Path] = [p for p in files if p.is_file()]
+        for d in dirs:
+            try:
+                for c in sorted(d.iterdir()):
+                    if c.is_file() and c.suffix.lower() in spec["accept"]:
+                        expanded.append(c)
+                        dir_count += 1
+            except Exception:
+                pass
+        files = expanded
+
     if skip_collect:
         leader = True                     # 一次性拿到全部文件，不需要选举
     else:
@@ -193,6 +208,10 @@ def do_run(verb: str, raw_files: list[str], skip_collect: bool = False) -> int:
             msg = (f"选中的 {len(skipped)} 个文件都不是该方案支持的格式。\n\n"
                    f"【{spec['label']}】支持：{exts}\n\n"
                    f"示例：{skipped[0].name}")
+        elif dirs:
+            exts = " ".join(sorted(spec["accept"]))
+            msg = (f"这个文件夹里没有【{spec['label']}】能处理的文件。\n\n"
+                   f"需要：{exts}\n\n提示：本工具只处理文件夹第一层的文件，不递归子文件夹。")
         else:
             msg = "没有取到文件路径。"
         print_safe(msg)
@@ -333,28 +352,56 @@ def do_classic(argv: list[str]) -> int:
 
 
 def do_install(argv: list[str]) -> int:
-    lean = "--lean" in argv
-    info = registry.install(lean=lean)
+    """装菜单：优先 COM 一级菜单；COM 不可用就回退经典级联菜单。"""
+    force_cascade = "--cascade" in argv
+
+    com_ok, com_msg = False, "跳过（--cascade）"
+    if not force_cascade:
+        info = registry.install_com()
+        if info.get("ok"):
+            com_ok, com_msg = registry.com_verify()
+        else:
+            com_msg = info.get("reason", "未知原因")
+
+    if com_ok:
+        registry.remove_cascade()          # 避免右键里出现两份
+        registry.set_classic_menu(False)   # 还原 Win11 默认菜单：COM 项本身就进一级
+        mode = "com"
+        body = (f"安装方式：【COM 外壳扩展】→ 直接进入 Windows 11 一级右键菜单。\n"
+                f"验证：{com_msg}\n"
+                f"Windows 11 默认右键菜单已还原（不用点「显示更多选项」）。\n"
+                f"文件和文件夹上都能看到。")
+    else:
+        registry.install(lean=False)       # 经典级联菜单兜底
+        registry.set_classic_menu(True)    # 切到经典完整菜单，让它出现在一级
+        mode = "cascade"
+        body = (f"COM 扩展不可用（{com_msg}），已回退到【经典级联菜单】方案：\n"
+                f"已切到 Windows 10 风格完整右键菜单，菜单项同样在一级。\n"
+                f"文件上能看到（文件夹上不显示）。")
+
     registry.notify_explorer()
-    text = (f"右键菜单已安装（当前用户，无需管理员）。\n\n"
-            f"菜单项：{info['items']} 个\n"
-            f"注册位置：HKEY_CURRENT_USER\\{registry.PARENT_KEY}\n\n"
-            f"想让它出现在【一级菜单】（右键直接可见，不用点「显示更多选项」）：\n"
-            f"  执行 classic on  →  切到经典完整右键菜单（可 classic off 还原）\n"
-            f"当前经典菜单状态：{'开' if registry.classic_menu_on() else '关'}")
-    winui.info_box(text, "安装完成")
-    return 0
+    winui.info_box(
+        f"右键菜单已安装（当前用户，无需管理员）。\n\n{body}\n\n"
+        f"注册位置：HKEY_CURRENT_USER\\{registry.PARENT_KEY}",
+        "安装完成",
+    )
+    print_safe(f"install mode = {mode}")
+    return 0 if com_ok else 0
 
 
 def do_uninstall(argv: list[str]) -> int:
     purge = "--purge" in argv
     removed = registry.uninstall(remove_config=purge)
+    registry.remove_com()
+    registry.set_classic_menu(False)   # 还原 Win11 默认菜单样式
     registry.notify_explorer()
     winui.info_box(
         f"右键菜单已删除。\n\n"
-        f"父菜单：{'已删除' if removed['menu'] else '本来就不存在'}\n"
+        f"COM 外壳扩展：已注销\n"
+        f"级联菜单：{'已删除' if removed['menu'] else '本来就不存在'}\n"
         f"子菜单项：删除 {removed['verbs']} 个\n"
         f"临时文件：已清理\n"
+        f"菜单样式：已还原 Windows 11 默认\n"
         f"配置数据：{'已删除' if removed.get('config') else '保留（如需删除：uninstall --purge）'}",
         "卸载完成",
     )

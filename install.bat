@@ -10,9 +10,9 @@ echo.
 
 rem 优先用与本脚本同目录的 exe（安装版），其次用 dist\ 下的（源码/打包目录）
 set "EXE=%~dp0FileConverter.exe"
-if exist "%EXE%" goto USE_EXE
+if exist "%EXE%" goto HAS_EXE
 set "EXE=%~dp0dist\FileConverter.exe"
-if exist "%EXE%" goto USE_EXE
+if exist "%EXE%" goto HAS_EXE
 
 echo   没有找到 FileConverter.exe，改用 Python 源码模式安装。
 echo.
@@ -27,27 +27,22 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-set "RUN=python %~dp0src\converter.py"
-goto STEP1
+echo   [1/2] 写入右键菜单（COM 外壳扩展，直接进一级菜单）...
+python "%~dp0src\converter.py" install
+goto RESTART
 
-:USE_EXE
-set "RUN="%EXE%""
+:HAS_EXE
+echo   [1/2] 写入右键菜单（COM 外壳扩展，直接进一级菜单）...
+"%EXE%" install
 
-:STEP1
-echo   [1/3] 写入右键菜单...
-%RUN% install
-
-echo   [2/3] 启用经典完整右键菜单（让菜单项直接出现在一级）...
-%RUN% classic on
-
-echo   [3/3] 重启资源管理器，让菜单立刻生效...
+:RESTART
+echo   [2/2] 重启资源管理器，让菜单立刻生效...
 taskkill /f /im explorer.exe >nul 2>nul
 start "" explorer.exe
 
 echo.
-echo   完成！现在右键任意文件，最上面就能看到【转换文件格式】。
+echo   完成！现在右键任意文件或文件夹，一级菜单里就有【转换文件格式】。
 echo.
-echo   想还原 Win11 默认的紧凑菜单：运行 还原菜单样式.bat
-echo   想彻底卸载：运行 uninstall.bat
+echo   卸载：uninstall.bat
 echo.
 pause

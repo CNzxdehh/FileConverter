@@ -1,7 +1,11 @@
 # 构建产物（exe 有 150MB，超过 GitHub 单文件 100MB 限制，不进仓库）
 build/
 dist/
-*.spec.bak
+native/obj/
+native/*.lib
+native/*.exp
+src/*.dll
+/*.dll
 
 # 自检生成的样本与临时文件
 samples/

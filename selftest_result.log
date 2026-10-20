@@ -1,48 +1,60 @@
 C:\Users\徐颢朗\.workbuddy\binaries\python\envs\fileconv\Lib\site-packages\fitz\__init__.py:17: FutureWarning: The `fitz` API is deprecated and will be removed in future. Use `import pymupdf` instead.
   warnings.warn(
 == 生成样本文件 ==
-   sample.avi, sample.docx, sample.flac, sample.flv, sample.jpg, sample.m4a, sample.mkv, sample.mov, sample.ogg, sample.pdf, sample.png, sample.wav, sample.webp
+   sample.avi, sample.docx, sample.flac, sample.flv, sample.jpg, sample.m4a, sample.mkv, sample.mov, sample.ogg, sample.pdf, sample.png, sample.wav, sample.webp, sample2.pdf, sample3.pdf
 
 == 多选合并器（并发选举）==
-  [PASS] 6 个并发实例只选出 1 个主进程 -> ['follow 0', 'LEADER 6', 'follow 0', 'follow 0', 'follow 0', 'follow 0']
+  [PASS] 6 个并发实例只选出 1 个主进程 -> ['follow 0', 'follow 0', 'follow 0', 'follow 0', 'follow 0', 'LEADER 6']
   [PASS] 主进程收集到全部文件 -> [6]
 
 == 单文件转换 ==
-  [PASS] pdf2docx  ← sample.pdf -> sample_转换后_2.docx
-  [PASS] pdf2txt  ← sample.pdf -> sample_转换后_2.txt
-  [PASS] docx2pdf  ← sample.docx -> sample_转换后_3.pdf
-  [PASS] img2png  ← sample.webp -> sample_转换后_4.png
-  [PASS] img2jpg  ← sample.png -> sample_转换后_2.jpg
-  [PASS] img2webp  ← sample.jpg -> sample_转换后_2.webp
-  [PASS] img2pdf  ← sample.png -> sample_转换后_4.pdf
-  [PASS] aud2mp3  ← sample.wav -> sample_转换后_9.mp3
-  [PASS] vid2mp4  ← sample.mov -> sample_转换后_8.mp4
-  [PASS] aud2mp3  ← sample.flac -> sample_转换后_10.mp3
-  [PASS] aud2mp3  ← sample.m4a -> sample_转换后_11.mp3
-  [PASS] aud2mp3  ← sample.ogg -> sample_转换后_12.mp3
-  [PASS] vid2mp4  ← sample.mkv -> sample_转换后_9.mp4
-  [PASS] vid2mp4  ← sample.avi -> sample_转换后_10.mp4
-  [PASS] vid2mp4  ← sample.flv -> sample_转换后_11.mp4
+  [PASS] pdf2docx  ← sample.pdf -> sample_转换后_4.docx
+  [PASS] pdf2txt  ← sample.pdf -> sample_转换后_7.txt
+  [PASS] docx2pdf  ← sample.docx -> sample_转换后_7.pdf
+  [PASS] docx2txt  ← sample.docx -> sample_转换后_8.txt
+  [PASS] pdf2img  ← sample.pdf -> sample_转换后_11_1.png, sample_转换后_11_2.png
+  [PASS] img2png  ← sample.webp -> sample_转换后_11.png
+  [PASS] img2jpg  ← sample.png -> sample_转换后_4.jpg
+  [PASS] img2webp  ← sample.jpg -> sample_转换后_10.webp
+  [PASS] img2pdf  ← sample.png -> sample_转换后_8.pdf
+  [PASS] imgcompress  ← sample.png -> sample_压缩后_4.png
+  [PASS] aud2mp3  ← sample.wav -> sample_转换后_28.mp3
+  [PASS] aud2wav  ← sample.m4a -> sample_转换后_4.wav
+  [PASS] vid2mp3  ← sample.mov -> sample_转换后_29.mp3
+  [PASS] vid2mp4  ← sample.mov -> sample_转换后_22.mp4
+  [PASS] vid2gif  ← sample.mov -> sample_转换后_4.gif
+  [PASS] aud2mp3  ← sample.flac -> sample_转换后_30.mp3
+  [PASS] aud2mp3  ← sample.m4a -> sample_转换后_31.mp3
+  [PASS] aud2mp3  ← sample.ogg -> sample_转换后_32.mp3
+  [PASS] vid2mp4  ← sample.mkv -> sample_转换后_23.mp4
+  [PASS] vid2mp4  ← sample.avi -> sample_转换后_24.mp4
+  [PASS] vid2mp4  ← sample.flv -> sample_转换后_25.mp4
 
 == 批量（同时选中多个文件）==
   [PASS] 多选 4 个音频 → mp3 -> 4 个输出
   [PASS] 多选 3 个视频 → mp4 -> 3 个输出
   [PASS] 多图合并为一个 PDF -> 1 个
-  [PASS] 命令行直传 2 个文件 -> ['sample_转换后_5.png', 'sample_转换后_6.png']
+  [PASS] 命令行直传 2 个文件 -> ['sample_转换后_12.png', 'sample_转换后_13.png']
+  [PASS] runm 一次传 2 个文件 -> ['sample_转换后_11.webp', 'sample_转换后_12.webp']
+  [PASS] 多 PDF 合并（runm，页数应为 6） -> 1 个文件 / 6 页
+  [PASS] 多选 PDF 合并（页数合计应为 6） -> 1 个文件 / 共 6 页
 
 == 自定义输出目录 / 恢复原目录 ==
-  [PASS] 文件落在自定义文件夹 -> ['outtest_转换后_2.png']
+  [PASS] 文件落在自定义文件夹 -> ['outtest_转换后_4.png']
   [PASS] 恢复后落在原文件同目录
 
-== 注册表读写 ==
-  [PASS] install → 父菜单写入
-  [PASS] install → 子菜单项写入
-  [PASS] install → 父键没有 SubCommands（有就不显示，踩过）
-  [PASS] 菜单真的出现在右键菜单里（Explorer 枚举）
-  [PASS] uninstall → 父菜单删除
-  [PASS] uninstall → 无残留 -> []
+== 注册表 / COM 扩展 ==
+  [PASS] install → COM 外壳扩展已注册
+  [PASS] install → COM 对象可实例化且标题正确 -> 转换文件格式
+  [PASS] install → 挂在文件(*)和文件夹(Directory)上
+  [PASS] install → 菜单样式已还原为 Win11 默认
+  [PASS] 菜单键的 ExplorerCommandHandler 指向我们的 CLSID
+  [PASS] 外壳扩展 DLL 可加载 -> LoadLibrary 成功（无缺失依赖）
+  [PASS] uninstall → COM 已注销
+  [PASS] uninstall → 级联菜单已删除
+  [PASS] uninstall → 菜单样式已还原
   [还原] 测试前菜单已安装，已重新装回
 
 ============================================================
-通过 29   失败 0   用时 103.0s
+通过 41   失败 0   用时 137.1s
 ============================================================
