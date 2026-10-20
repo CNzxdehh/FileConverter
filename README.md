@@ -104,22 +104,32 @@ FileConverter.exe uninstall --purge:: 连配置一起删
 > 在文件上右键 → 点最下面的**显示更多选项** → 就能看到【转换文件格式】。
 > 这是 Windows 11 对静态菜单项的限制，只有 COM 外壳扩展才能进一级菜单。
 
-### 一级菜单（COM 外壳扩展）
+### 一级菜单（Windows 11 现代右键菜单）
 
-Windows 11 的紧凑右键菜单**只认 `IExplorerCommand` 的 COM 外壳扩展**，纯注册表进不去。
-本工具自带一个 57 KB 的原生 COM DLL（`native/FileConvMenu.c`，纯 C、无依赖、x64）：
+结论先说：**Windows 11 的现代紧凑菜单，只接受 MSIX 包里声明的菜单扩展**，
+纯注册表（包括 `ExplorerCommandHandler`）只会出现在「显示更多选项」的旧菜单里。
+QQ、WPS、Bandizip 在现代菜单里的项，全部来自 MSIX 稀疏包（sparse package）。
 
-- `install` 会注册 CLSID + 在 `*` 和 `Directory` 上挂 `ExplorerCommandHandler`；
-- 文件和**文件夹**右键都能看到【转换文件格式】，悬停展开 17 种转换；
-- 注册完会**自检**：真的 `CoCreateInstance` 一次并读标题，通过才算成功；
-- 如果自检失败（缺 DLL / 被安全软件拦），自动**回退**到经典级联菜单 + 经典菜单样式；
-- 卸载时注销 COM、还原 Windows 11 默认菜单。
+本工具的做法（三层，逐级回退）：
+
+| 层级 | 方式 | 效果 |
+|---|---|---|
+| 1 | **MSIX 稀疏包** + `windows.fileExplorerContextMenus` + COM 扩展 | 文件/文件夹右键**一级菜单**直接可见，Win11 默认样式不变 |
+| 2 | COM 扩展（`ExplorerCommandHandler`）+ 经典完整菜单 | 一级可见，但菜单样式会变成 Windows 10 风格 |
+| 3 | 纯注册表级联菜单 | 只出现在「显示更多选项」里 |
+
+`install` 会自动选能用的最高层级，并做自检；失败自动往下降。
+
+- 第 1 层需要系统开启**开发者模式**（免签名注册稀疏包）：`Add-AppxPackage -Register`.
+  检查：`设置 → 系统 → 开发者选项`。
+- 组件：`FileConvMenu.dll`（57 KB，纯 C 写的 IExplorerCommand）+ `AppxManifest.xml` + `Assets\`。
+- 卸载会同时移除 MSIX 包、注销 COM、删除注册表项，并还原 Win11 默认菜单样式。
 
 ```bat
-FileConverter.exe install              :: 装（优先 COM 一级菜单）
-FileConverter.exe install --cascade    :: 强制用经典级联菜单方案
+FileConverter.exe install              :: 装（自动选最佳方案）
+FileConverter.exe install --cascade    :: 强制用经典级联菜单
 FileConverter.exe classic on|off       :: 手动切经典完整菜单 / 还原
-python tools	est_com.py               :: 单独验证 COM 对象（标题/图标/子项）
+python tools\test_com.py               :: 验证 COM 对象（标题/图标/17 个子项）
 ```
 
 ### ffmpeg（音视频转换必需）

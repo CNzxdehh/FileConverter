@@ -204,6 +204,69 @@ def classic_menu_on() -> bool:
 
 
 # -------------------------------------------------------------------------- #
+# Windows 11 一级菜单（现代紧凑菜单）：必须是 MSIX 稀疏包
+#
+# 实测结论：只写 ExplorerCommandHandler 的项**不会**出现在 Win11 新菜单里
+# （新菜单只认 `windows.fileExplorerContextMenus` 包扩展）。
+# QQ / WPS / Bandizip 全是这么做的：MSIX 稀疏包 + 包内声明
+# `desktop5:Verb Clsid=...` + `com:SurrogateServer`。
+# 开发者模式下 `Add-AppxPackage -Register <manifest> -ExternalLocation <dir>`
+# 可以免签名注册（不需要管理员）。
+# -------------------------------------------------------------------------- #
+MSIX_PKG_NAME = "FileConverter.ContextMenu"
+MSIX_MANIFEST = "AppxManifest.xml"
+_NO_WINDOW = 0x08000000
+
+
+def _ps(cmd: str, timeout: int = 180):
+    import subprocess
+
+    return subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=_NO_WINDOW, timeout=timeout,
+    )
+
+
+def msix_manifest_path() -> Path:
+    return Path(exe_path()).parent / MSIX_MANIFEST
+
+
+def msix_installed() -> bool:
+    try:
+        r = _ps(f'(Get-AppxPackage -Name "{MSIX_PKG_NAME}").PackageFullName', timeout=60)
+        return MSIX_PKG_NAME in (r.stdout or "")
+    except Exception:
+        return False
+
+
+def install_msix() -> dict:
+    """注册稀疏包（免签名，需要开发者模式）。"""
+    man = msix_manifest_path()
+    if not man.is_file():
+        return {"ok": False, "reason": f"缺少 {MSIX_MANIFEST}（应与 exe 同目录）"}
+    dll = Path(exe_path()).parent / COM_DLL_NAME
+    if not dll.is_file():
+        return {"ok": False, "reason": f"缺少 {COM_DLL_NAME}"}
+    if msix_installed():
+        _ps(f'Get-AppxPackage -Name "{MSIX_PKG_NAME}" | Remove-AppxPackage', timeout=120)
+    try:
+        _ps(f"Add-AppxPackage -Register '{man}' -ExternalLocation '{man.parent}'")
+    except Exception as e:
+        return {"ok": False, "reason": f"注册异常：{e}"[:160]}
+    if msix_installed():
+        return {"ok": True, "pkg": MSIX_PKG_NAME}
+    return {"ok": False, "reason": "注册未成功（可能需要开启「开发者模式/允许旁加载」）"}
+
+
+def uninstall_msix() -> None:
+    try:
+        _ps(f'Get-AppxPackage -Name "{MSIX_PKG_NAME}" | Remove-AppxPackage', timeout=120)
+    except Exception:
+        pass
+
+
+# -------------------------------------------------------------------------- #
 # Win11 一级菜单：IExplorerCommand COM 外壳扩展
 # -------------------------------------------------------------------------- #
 CLSID_COM = "{7B3F9A12-4C6D-4E21-9A3B-112233445566}"
@@ -259,7 +322,7 @@ def com_registered() -> bool:
 
 
 def com_verify() -> tuple[bool, str]:
-    """真正实例化一次 COM 对象并取标题，确认 Explorer 里也能加载。"""
+    """真正实例化一次 COM 对象并取标题，确认能被加载。"""
     import ctypes
     import uuid
 

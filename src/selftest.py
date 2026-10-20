@@ -325,6 +325,11 @@ def test_registry_dry() -> None:
          and registry.key_exists(r"Software\Classes\Directory\shell\FileConvModern"))
     case("install → 菜单样式已还原为 Win11 默认", not registry.classic_menu_on())
 
+    # 一级菜单两条路：现代菜单（MSIX 包）或经典菜单，至少有一条生效
+    top_ok = registry.msix_installed() or registry.classic_menu_on()
+    case("install → 一级菜单已生效（MSIX 包 或 经典菜单）", top_ok,
+         f"msix={registry.msix_installed()} classic={registry.classic_menu_on()}")
+
     # COM 版本的菜单项不会出现在 Shell.Application 的 Verbs() 枚举里
     #（Verbs 只覆盖旧式 verb），所以这里改为验证：注册值正确 + DLL 能被加载。
     verb_key = r"Software\Classes\*\shell\FileConvModern"

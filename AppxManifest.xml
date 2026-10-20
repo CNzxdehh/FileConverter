@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 稀疏包（sparse package）：让【转换文件格式】出现在 Windows 11 一级右键菜单。
+     Windows 11 的紧凑菜单只接受 MSIX 包声明的 windows.fileExplorerContextMenus，
+     纯注册表做不到。开发者模式下可用 Add-AppxPackage -Register 免签名注册。 -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:desktop5="http://schemas.microsoft.com/appx/manifest/desktop/windows10/5"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  IgnorableNamespaces="uap uap10 rescap desktop4 desktop5 com">
+
+  <Identity Name="FileConverter.ContextMenu"
+            Publisher="CN=FileConverter"
+            Version="1.0.0.0" />
+
+  <Properties>
+    <DisplayName>转换文件格式</DisplayName>
+    <PublisherDisplayName>FileConverter</PublisherDisplayName>
+    <Logo>Assets\logo150.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.18950.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+  </Resources>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="FileConverter.Menu"
+                 Executable="FileConverter.exe"
+                 uap10:TrustLevel="mediumIL"
+                 uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements
+        DisplayName="转换文件格式"
+        Description="右键转换 PDF / Word / 图片 / 音视频格式"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\logo150.png"
+        Square44x44Logo="Assets\logo44.png"
+        AppListEntry="none" />
+      <Extensions>
+        <!-- 一级右键菜单：文件 + 文件夹 -->
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="*">
+              <desktop5:Verb Id="FileConvFiles" Clsid="7B3F9A12-4C6D-4E21-9A3B-112233445566" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="Directory">
+              <desktop5:Verb Id="FileConvFolders" Clsid="7B3F9A12-4C6D-4E21-9A3B-112233445566" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+
+        <!-- COM 服务器：我们的 IExplorerCommand 实现 -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="FileConverter 右键菜单">
+              <com:Class Id="7B3F9A12-4C6D-4E21-9A3B-112233445566"
+                         Path="FileConvMenu.dll"
+                         ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>
