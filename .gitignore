@@ -1,0 +1,19 @@
+# 构建产物（exe 有 150MB，超过 GitHub 单文件 100MB 限制，不进仓库）
+build/
+dist/
+*.spec.bak
+
+# 自检生成的样本与临时文件
+samples/
+*.log
+!selftest_result.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/

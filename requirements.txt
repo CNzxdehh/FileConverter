@@ -1,0 +1,18 @@
+# 运行时依赖（转换引擎）
+Pillow>=10.0,<14          # 图片互转、图片转 PDF
+pdf2docx>=0.5.8,<0.6      # PDF -> Word(.docx)，内部依赖 PyMuPDF
+PyMuPDF>=1.23             # PDF -> TXT、PDF 页数识别
+python-docx>=1.1          # Word 文档生成/读取
+pywin32>=306 ; sys_platform == "win32"   # 可选：Word COM 的另一种写法（本工具默认走 PowerShell COM）
+
+# 打包依赖（只有打包时需要）
+pyinstaller>=6.3
+
+# 外部程序（必须）
+# ffmpeg.exe / ffprobe.exe   —— 音视频转换依赖
+#   下载：https://www.gyan.dev/ffmpeg/builds/  → ffmpeg-release-essentials.zip
+#   放置：本程序目录\ffmpeg\ffmpeg.exe   或放进 PATH
+#
+# 可选外部程序
+#   Microsoft Word（Word 转 PDF 优先使用）
+#   LibreOffice（没有 Word 时兜底转换 Word 转 PDF）

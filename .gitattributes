@@ -1,0 +1,7 @@
+# .bat 是 GBK + CRLF 编码的，禁止 Git 做任何换行/编码转换
+*.bat -text
+*.ico binary
+*.png binary
+*.exe binary
+*.py text eol=lf
+*.md text eol=lf
