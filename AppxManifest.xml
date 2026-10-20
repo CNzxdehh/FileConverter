@@ -55,22 +55,14 @@
             <desktop5:ItemType Type="*">
               <desktop5:Verb Id="FileConvFiles" Clsid="7B3F9A12-4C6D-4E21-9A3B-112233445566" />
             </desktop5:ItemType>
-            <desktop5:ItemType Type="Directory">
-              <desktop5:Verb Id="FileConvFolders" Clsid="7B3F9A12-4C6D-4E21-9A3B-112233445566" />
-            </desktop5:ItemType>
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>
 
-        <!-- COM 服务器：我们的 IExplorerCommand 实现 -->
-        <com:Extension Category="windows.comServer">
-          <com:ComServer>
-            <com:SurrogateServer DisplayName="FileConverter 右键菜单">
-              <com:Class Id="7B3F9A12-4C6D-4E21-9A3B-112233445566"
-                         Path="FileConvMenu.dll"
-                         ThreadingModel="STA" />
-            </com:SurrogateServer>
-          </com:ComServer>
-        </com:Extension>
+        <!-- 注意：不要在这里声明 com:Extension / com:SurrogateServer！
+             那是"跨进程代理"，而 IExplorerCommand 没有 proxy/stub，
+             会导致 dllhost.exe 挂死 + Explorer 在 Windows.UI.FileExplorer.dll 崩 0xc0000005。
+             我们的 CLSID 走 HKCU\Software\Classes\CLSID 的 InprocServer32（in-proc）。
+        -->
       </Extensions>
     </Application>
   </Applications>
