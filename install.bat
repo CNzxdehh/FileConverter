@@ -27,12 +27,12 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo   [1/2] 写入右键菜单（COM 外壳扩展，直接进一级菜单）...
+echo   [1/2] 写入右键菜单（级联子菜单：转换文件格式）...
 python "%~dp0src\converter.py" install
 goto RESTART
 
 :HAS_EXE
-echo   [1/2] 写入右键菜单（COM 外壳扩展，直接进一级菜单）...
+echo   [1/2] 写入右键菜单（级联子菜单：转换文件格式）...
 "%EXE%" install
 
 :RESTART
@@ -41,7 +41,8 @@ taskkill /f /im explorer.exe >nul 2>nul
 start "" explorer.exe
 
 echo.
-echo   完成！现在右键任意文件或文件夹，一级菜单里就有【转换文件格式】。
+echo   完成！现在右键任意文件或文件夹，菜单里直接就有
+echo   【转换文件格式】，鼠标移上去即展开全部转换项。
 echo.
 echo   卸载：uninstall.bat
 echo.

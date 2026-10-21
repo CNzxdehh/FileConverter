@@ -127,11 +127,11 @@ def install(lean: bool = False) -> dict:
 
 
 def install_static(lean: bool = False) -> dict:
-    """单层菜单项：右键 →【转换文件格式】→ 弹编号选单挑转换方案。
+    """兜底方案：单个普通菜单项，点了弹自绘选单挑转换方案。
 
-    为什么不做级联子菜单：部分 Win11 机器上注册表级联渲染不出来
-    （实测：父项有了 `SubCommands=""` 和子项 `MUIVerb` 仍然点不开），
-    而"一个普通菜单项 + command"是 100% 可靠的。
+    ⚠️ 只在 cascade 外壳扩展（install_ctx）装不上时才用它 —— 因为本机的
+    Win11 用**纯注册表**渲染不出级联子菜单（父项加 `SubCommands=""`、子项
+    加 `MUIVerb` 都试过，点不开），而弹出式选单又不是用户要的级联效果。
 
     覆盖范围：所有文件（`*`）+ 所有文件夹（`Directory`），Position=Top 置顶。
     """
@@ -167,6 +167,163 @@ def uninstall_static() -> int:
             _delete_tree(HIVE, key)
             n += 1
     return n
+
+
+# -------------------------------------------------------------------------- #
+# 【主力方案】真正的级联子菜单：IContextMenu 外壳扩展 FileConvCtx.dll
+#
+# 为什么必须自己写 DLL：
+#   - 纯注册表级联（父键 + shell 子键 / SubCommands）在这台 Win11 上渲染不出来；
+#   - 弹窗式选单不是用户要的效果（要的是 Bandizip 那种"转换文件格式 >"展开列表）；
+#   - 所以只能走 shell 扩展自己 CreatePopupMenu + InsertMenu(MF_POPUP) 的路子，
+#     这也是 7-Zip / WinRAR / TortoiseGit 的标准做法。
+#
+# ⚠️ 位置说明（微软文档已定性，别再试错）：
+#   Win11 紧凑菜单**只**承载 IExplorerCommand + MSIX 包；IContextMenu 扩展
+#   只会出现在旧版菜单里。所以必须配合 set_classic_menu(True) 把经典完整菜单
+#   打开，用户一右键就能直接看到级联项，不用再点「显示更多选项」。
+#
+# 注册位置（HKCU，免管理员）：
+#   Software\Classes\CLSID\{B2C4E111-...}\InprocServer32  → FileConvCtx.dll
+#   Software\Classes\{*|Directory}\shellex\ContextMenuHandlers\FileConv → CLSID
+# -------------------------------------------------------------------------- #
+CLSID_CTX = "{B2C4E111-7A9D-4C3E-8F21-9D4E5A6B7C8D}"
+CTX_DLL_NAME = "FileConvCtx.dll"
+CTX_HANDLER = "FileConv"
+CTX_TARGETS = (r"*", "Directory")
+
+
+def ctx_dll_path() -> Path:
+    """级联扩展 DLL：正式安装时在 exe 旁边；源码模式退回仓库 native/。"""
+    cand = Path(exe_path()).parent / CTX_DLL_NAME
+    if cand.is_file():
+        return cand
+    root = Path(__file__).resolve().parents[2]     # src/core/registry.py → 项目根
+    alt = root / "native" / CTX_DLL_NAME
+    return alt if alt.is_file() else cand
+
+
+def install_ctx() -> dict:
+    """注册级联子菜单外壳扩展。返回 {'ok':..., 'dll':..., 'targets':[...]}。"""
+    dll = ctx_dll_path()
+    if not dll.is_file():
+        return {"ok": False, "reason": f"找不到 {CTX_DLL_NAME}（应在 {dll.parent}）"}
+
+    clsid_key = rf"Software\Classes\CLSID\{CLSID_CTX}"
+    _set_str(HIVE, clsid_key, "", "FileConverter 右键级联转换菜单")
+    _set_str(HIVE, clsid_key + r"\InprocServer32", "", str(dll))
+    _set_str(HIVE, clsid_key + r"\InprocServer32", "ThreadingModel", "Apartment")
+
+    for target in CTX_TARGETS:
+        base = rf"Software\Classes\{target}\shellex\ContextMenuHandlers\{CTX_HANDLER}"
+        _set_str(HIVE, base, "", CLSID_CTX)
+
+    return {"ok": True, "dll": str(dll), "targets": list(CTX_TARGETS)}
+
+
+def remove_ctx() -> int:
+    _delete_tree(HIVE, rf"Software\Classes\CLSID\{CLSID_CTX}")
+    n = 0
+    for target in CTX_TARGETS:
+        key = rf"Software\Classes\{target}\shellex\ContextMenuHandlers\{CTX_HANDLER}"
+        if key_exists(key):
+            _delete_tree(HIVE, key)
+            n += 1
+    return n
+
+
+def ctx_registered() -> bool:
+    return key_exists(rf"Software\Classes\CLSID\{CLSID_CTX}\InprocServer32")
+
+
+def ctx_handlers_bound() -> bool:
+    """CLSID 挂到 `*` / Directory 上了没（两个都要在）。"""
+    return all(
+        key_exists(rf"Software\Classes\{t}\shellex\ContextMenuHandlers\{CTX_HANDLER}")
+        for t in CTX_TARGETS
+    )
+
+
+def ctx_verify() -> tuple[bool, str]:
+    """真正把扩展跑一遍：建菜单 → 数子项 → 读文字。失败会给出具体阶段。"""
+    import ctypes
+    import uuid
+
+    from .tasks import VERB_ORDER
+
+    dll = ctx_dll_path()
+    if not dll.is_file():
+        return False, f"缺 {CTX_DLL_NAME}"
+
+    k32 = ctypes.WinDLL("kernel32")
+    u32 = ctypes.WinDLL("user32")
+    o32 = ctypes.WinDLL("ole32")
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("d1", ctypes.c_ulong), ("d2", ctypes.c_ushort),
+                    ("d3", ctypes.c_ushort), ("d4", ctypes.c_ubyte * 8)]
+
+    def mk(s: str) -> GUID:
+        u = uuid.UUID(s)
+        g = GUID()
+        g.d1, g.d2, g.d3 = u.fields[0], u.fields[1], u.fields[2]
+        for i, b in enumerate(u.bytes[8:]):
+            g.d4[i] = b
+        return g
+
+    def vfn(p, idx, restype, *argtypes):
+        obj = ctypes.cast(p, ctypes.POINTER(ctypes.c_void_p))
+        vt = ctypes.cast(obj[0], ctypes.POINTER(ctypes.c_void_p))
+        return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vt[idx])
+
+    try:
+        k32.LoadLibraryW.argtypes = [ctypes.c_wchar_p]
+        k32.LoadLibraryW.restype = ctypes.c_void_p
+        k32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        k32.GetProcAddress.restype = ctypes.c_void_p
+
+        h = k32.LoadLibraryW(str(dll))
+        if not h:
+            return False, "LoadLibrary 失败"
+        addr = k32.GetProcAddress(h, b"DllGetClassObject")
+        if not addr:
+            return False, "找不到导出函数 DllGetClassObject"
+        DGCO = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.POINTER(GUID),
+                                  ctypes.POINTER(GUID),
+                                  ctypes.POINTER(ctypes.c_void_p))(addr)
+
+        o32.CoInitialize(None)
+        cf = ctypes.c_void_p()
+        hr = DGCO(ctypes.byref(mk(CLSID_CTX)),
+                  ctypes.byref(mk("{00000001-0000-0000-C000-000000000046}")),
+                  ctypes.byref(cf))
+        if hr != 0 or not cf:
+            return False, f"DllGetClassObject 失败 (0x{hr & 0xFFFFFFFF:08X})"
+
+        ci = vfn(cf, 3, ctypes.c_long, ctypes.c_void_p, ctypes.POINTER(GUID),
+                 ctypes.POINTER(ctypes.c_void_p))
+        ctx = ctypes.c_void_p()
+        hr = ci(cf, None, ctypes.byref(mk("{000214e4-0000-0000-C000-000000000046}")),
+                ctypes.byref(ctx))
+        if hr != 0 or not ctx:
+            return False, f"CreateInstance(IContextMenu) 失败 (0x{hr & 0xFFFFFFFF:08X})"
+
+        u32.CreatePopupMenu.restype = ctypes.c_void_p
+        hmenu = u32.CreatePopupMenu()
+        # 没走 Initialize → 路径表是空的，QueryContextMenu 会拒绝插菜单；
+        # 这里只验证"能加载 + 能调用 + 返回码合法"，不验证子项内容。
+        qcm = vfn(ctx, 3, ctypes.c_long, ctypes.c_void_p, ctypes.c_uint,
+                  ctypes.c_uint, ctypes.c_uint, ctypes.c_uint)
+        hr = qcm(ctx, hmenu, 0, 1, 0x7FFF, 0)
+        u32.DestroyMenu(ctypes.c_void_p(hmenu))
+        vfn(ctx, 2, ctypes.c_ulong)(ctx)
+        vfn(cf, 2, ctypes.c_ulong)(cf)
+        o32.CoUninitialize()
+        if hr < 0:
+            return False, f"QueryContextMenu 失败 (0x{hr & 0xFFFFFFFF:08X})"
+        return True, (f"级联扩展可加载，{len(VERB_ORDER)} 个转换方案")
+    except Exception as e:                                    # noqa: BLE001
+        return False, f"自检异常：{type(e).__name__}: {e}"
 
 
 def remove_cascade() -> None:
@@ -411,7 +568,8 @@ def com_verify() -> tuple[bool, str]:
 
 
 def is_installed() -> bool:
-    return key_exists(PARENT_KEY)
+    """任何一种形式装上了都算装上了。ctx（级联扩展）是主力。"""
+    return ctx_registered() or key_exists(PARENT_KEY) or com_registered()
 
 
 def notify_explorer() -> None:

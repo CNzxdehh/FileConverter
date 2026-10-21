@@ -45,6 +45,10 @@ if exist "%~dp0native\FileConvMenu.dll" (
     copy /y "%~dp0native\FileConvMenu.dll" "%~dp0dist\FileConvMenu.dll" >nul
     echo         已附带 FileConvMenu.dll（一级菜单的 COM 扩展）
 )
+if exist "%~dp0native\FileConvCtx.dll" (
+    copy /y "%~dp0native\FileConvCtx.dll" "%~dp0dist\FileConvCtx.dll" >nul
+    echo         已复制 FileConvCtx.dll（级联子菜单外壳扩展）
+)
 if exist "%~dp0AppxManifest.xml" (
     copy /y "%~dp0AppxManifest.xml" "%~dp0dist\AppxManifest.xml" >nul
     xcopy /y /q /i "%~dp0Assets" "%~dp0dist\Assets" >nul

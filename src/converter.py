@@ -113,6 +113,14 @@ def do_util(name: str, files: list[Path]) -> int:
         print_safe(f"配置文件         : {config_path()}")
         print_safe(f"当前输出位置     : {cfg.get('out_dir') or '原文件所在目录'}")
         print_safe(f"已装右键菜单     : {'是' if registry.is_installed() else '否'}")
+        print_safe(f"  级联子菜单扩展 : {'已注册' if registry.ctx_registered() else '未注册'}"
+                   + ("（已挂到 */Directory ✔）" if registry.ctx_handlers_bound()
+                      else "（未挂到右键对象 ✘）"))
+        ok_ctx, msg_ctx = registry.ctx_verify()
+        print_safe(f"  扩展自检       : {'通过' if ok_ctx else '失败'} — {msg_ctx}")
+        print_safe(f"  IExplorerCmd   : {'已注册' if registry.com_registered() else '未注册'}")
+        print_safe(f"  MSIX 菜单包    : {'已注册' if registry.msix_installed() else '未注册'}")
+        print_safe(f"  经典完整菜单   : {'开' if registry.classic_menu_on() else '关（Win11 紧凑菜单）'}")
         print_safe("")
         if not winui.silent():
             print_safe("按回车键关闭本窗口…")
@@ -433,42 +441,45 @@ def do_classic(argv: list[str]) -> int:
 
 
 def do_install(argv: list[str]) -> int:
-    """装菜单。默认【纯注册表静态级联】——Explorer 里不加载任何代码，最稳。
+    """装右键菜单。默认【级联子菜单外壳扩展】—— 就是 Bandizip / 7-Zip 那种
+    「转换文件格式 >」展开列表的效果。
 
-    `--com` 才会走 COM 外壳扩展 + MSIX（部分 Win11 上会让 Explorer
-    枚举菜单时 fail-fast，且换不来新菜单，不推荐）。
+    实现：IContextMenu 外壳扩展（FileConvCtx.dll）自己 CreatePopupMenu 后
+    InsertMenu(MF_POPUP)，注册表级联在这台 Win11 上渲染不出来，只能这样。
+
+    配套：同时打开「经典完整右键菜单」——因为微软已定性 IContextMenu 扩展
+    只出现在旧版菜单里，不开的话用户得多点一次「显示更多选项」。
     """
-    use_com = "--com" in argv
+    # 先把历史遗留的三套东西全清掉，避免互相打架
+    registry.uninstall_msix()
+    registry.remove_com()
+    registry.uninstall_static()
+    registry.remove_cascade()
+    registry.remove_ctx()
 
-    if use_com:
-        info = registry.install_com()
-        com_ok, com_msg = False, info.get("reason", "")
-        if info.get("ok"):
-            com_ok, com_msg = registry.com_verify()
-        if com_ok:
-            msix = registry.install_msix()
-            registry.uninstall_static()
-            registry.set_classic_menu(not msix.get("ok"))
-            mode = "com"
-            body = ("已安装【COM 外壳扩展】。\n自检：" + com_msg + "\n"
-                    + f"现代菜单包：{'已注册' if msix.get('ok') else '未注册'}")
-        else:
-            mode = "fallback"
-            registry.install_static()
-            registry.set_classic_menu(True)
-            body = f"COM 安装失败（{com_msg}），已回退静态菜单。"
+    info = registry.install_ctx()
+    cascade_ok, cascade_msg = False, info.get("reason", "")
+    if info.get("ok"):
+        cascade_ok, cascade_msg = registry.ctx_verify()
+
+    if cascade_ok:
+        mode = "cascade"
+        registry.set_classic_menu(True)
+        cover = " + ".join("所有文件" if t == "*" else "所有文件夹"
+                           for t in info["targets"])
+        body = ("安装方式：【级联子菜单外壳扩展】\n"
+                f"自检：{cascade_msg}\n"
+                f"覆盖：{cover}\n\n"
+                "已切到「经典完整右键菜单」，右键文件会直接看到\n"
+                "【转换文件格式 ▶】展开出全部转换项，不用再点「显示更多选项」。\n\n"
+                "想要 Win11 紧凑菜单：classic off（那样就得到「显示更多选项」里找）。")
     else:
-        registry.remove_com()
-        registry.remove_cascade()
-        registry.uninstall_static()
+        mode = "fallback"
         stats = registry.install_static()
         registry.set_classic_menu(True)
-        mode = "static"
-        cover = " + ".join("所有文件" if t == "*" else "所有文件夹" for t in stats["targets"])
-        body = ("安装方式：【纯注册表静态级联菜单】\n"
-                + f"菜单项：{stats['items']} 个，覆盖 {cover}\n"
-                + "已切到经典完整右键菜单，菜单项置顶（Position=Top）。\n"
-                + "Explorer 里不加载本程序任何代码 —— 不会崩。")
+        body = (f"级联扩展装不上（{cascade_msg}），已回退为单个菜单项。\n"
+                f"菜单项：{stats['items']} 个\n\n"
+                "回退模式下右键【转换文件格式】会弹出一个选单让你挑转换方案。")
 
     registry.notify_explorer()
     winui.info_box("右键菜单已安装。\n\n" + body, "安装完成")
@@ -480,14 +491,17 @@ def do_uninstall(argv: list[str]) -> int:
     purge = "--purge" in argv
     registry.uninstall_msix()
     registry.remove_com()
-    registry.uninstall_static()
+    registry.remove_cascade()      # 旧的静态/注册表级联
+    registry.remove_ctx()          # IContextMenu 级联扩展
+    registry.uninstall_static()    # 兜底单菜单项
     removed = registry.uninstall(remove_config=purge)
     registry.set_classic_menu(False)
     registry.notify_explorer()
     winui.info_box(
         "右键菜单已删除。\n\n"
-        "静态级联菜单：已清理（文件 + 文件夹）\n"
-        "COM 外壳扩展：已注销\n"
+        "级联子菜单扩展（FileConvCtx）：已注销\n"
+        "静态 / 注册表级联菜单：已清理（文件 + 文件夹）\n"
+        "IExplorerCommand 扩展：已注销\n"
         "MSIX 菜单包：已移除\n"
         "菜单样式：已还原 Windows 11 默认\n"
         f"配置数据：{'已删除' if removed.get('config') else '保留（如需删除：uninstall --purge）'}",

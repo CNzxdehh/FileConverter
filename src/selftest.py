@@ -311,52 +311,57 @@ def menu_visible() -> bool | None:
 
 
 def test_registry_dry() -> None:
-    print("\n== 注册表 / COM 扩展 ==")
+    print("\n== 注册表 / 级联子菜单外壳扩展 ==")
     from core import registry
 
-    was_installed = registry.is_installed() or registry.com_registered()
+    was_installed = registry.is_installed()
 
     run_cli([*CLI, "install"])
-    case("install → COM 外壳扩展已注册", registry.com_registered())
-    ok, msg = registry.com_verify()
-    case("install → COM 对象可实例化且标题正确", ok, str(msg))
-    case("install → 挂在文件(*)和文件夹(Directory)上",
-         registry.key_exists(r"Software\Classes\*\shell\FileConvModern")
-         and registry.key_exists(r"Software\Classes\Directory\shell\FileConvModern"))
-    case("install → 菜单样式已还原为 Win11 默认", not registry.classic_menu_on())
 
-    # 一级菜单两条路：现代菜单（MSIX 包）或经典菜单，至少有一条生效
-    top_ok = registry.msix_installed() or registry.classic_menu_on()
-    case("install → 一级菜单已生效（MSIX 包 或 经典菜单）", top_ok,
-         f"msix={registry.msix_installed()} classic={registry.classic_menu_on()}")
+    case("install → 级联扩展 CLSID 已注册", registry.ctx_registered())
+    ok, msg = registry.ctx_verify()
+    case("install → 扩展可加载、调用返回码合法", ok, str(msg))
+    case("install → 已挂到文件(*)和文件夹(Directory)", registry.ctx_handlers_bound())
+    case("install → 已切到经典完整菜单（级联项才在一级可见）",
+         registry.classic_menu_on())
 
-    # COM 版本的菜单项不会出现在 Shell.Application 的 Verbs() 枚举里
-    #（Verbs 只覆盖旧式 verb），所以这里改为验证：注册值正确 + DLL 能被加载。
-    verb_key = r"Software\Classes\*\shell\FileConvModern"
-    handler_ok = False
+    # CLSID 的 InprocServer32 必须指向 FileConvCtx.dll，且线程模型为 Apartment
+    srv = rf"Software\Classes\CLSID\{registry.CLSID_CTX}\InprocServer32"
+    dll_val, model = "", ""
     try:
         import winreg
 
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, verb_key) as h:
-            handler_ok = winreg.QueryValueEx(h, "ExplorerCommandHandler")[0].upper() == \
-                registry.CLSID_COM.upper()
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, srv) as h:
+            dll_val = winreg.QueryValueEx(h, "")[0]
+            model = winreg.QueryValueEx(h, "ThreadingModel")[0]
     except OSError:
-        handler_ok = False
-    case("菜单键的 ExplorerCommandHandler 指向我们的 CLSID", handler_ok)
+        pass
+    case("InprocServer32 指向 FileConvCtx.dll",
+         dll_val.lower().endswith("fileconvctx.dll"), dll_val)
+    case("ThreadingModel = Apartment（Explorer 是 STA）", model == "Apartment", model)
 
-    dll_ok, dll_msg = False, ""
-    try:
-        import ctypes
+    # 两个右键对象的 ContextMenuHandlers 默认值都要等于我们的 CLSID
+    bound = True
+    for t in registry.CTX_TARGETS:
+        key = rf"Software\Classes\{t}\shellex\ContextMenuHandlers\{registry.CTX_HANDLER}"
+        try:
+            import winreg
 
-        ctypes.WinDLL(str(registry.com_dll_path()))
-        dll_ok, dll_msg = True, "LoadLibrary 成功（无缺失依赖）"
-    except Exception as e:
-        dll_msg = str(e)[:120]
-    case("外壳扩展 DLL 可加载", dll_ok, dll_msg)
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as h:
+                bound = bound and \
+                    winreg.QueryValueEx(h, "")[0].upper() == registry.CLSID_CTX.upper()
+        except OSError:
+            bound = False
+    case("ContextMenuHandlers 默认值 = 我们的 CLSID", bound)
+
+    # 旧的 IExplorerCommand / MSIX / 静态项不能被留下来打架
+    case("install → 旧 IExplorerCommand 扩展已清除", not registry.com_registered())
+    case("install → 旧静态菜单项已清除", not registry.key_exists(registry.PARENT_KEY))
 
     run_cli([*CLI, "uninstall"])
-    case("uninstall → COM 已注销", not registry.com_registered())
-    case("uninstall → 级联菜单已删除", not registry.is_installed())
+    case("uninstall → 级联扩展已注销", not registry.ctx_registered())
+    case("uninstall → ContextMenuHandlers 已摘掉", not registry.ctx_handlers_bound())
+    case("uninstall → is_installed() 为假", not registry.is_installed())
     case("uninstall → 菜单样式已还原", not registry.classic_menu_on())
 
     if was_installed:      # 别把用户已经装好的菜单测没了
