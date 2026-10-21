@@ -150,8 +150,10 @@ def install_static(lean: bool = False) -> dict:
         _set_str(HIVE, parent, "MUIVerb", MENU_NAME)
         _set_str(HIVE, parent, "Icon", f'"{icon}",0')
         _set_str(HIVE, parent, "Position", "Top")
-        # 父键绝不能写 SubCommands（写了整项消失），并且要清掉旧版本残留
-        _del_value(HIVE, parent, "SubCommands")
+        # SubCommands 必须存在且为空字符串：这是"级联菜单"的开关，
+        # 表示子项在下面的 shell 子键里。少了它，父项会被当成普通命令执行，
+        # 弹出"该文件没有与之关联的应用"。
+        _set_str(HIVE, parent, "SubCommands", "")
         _del_value(HIVE, parent, "Extended")
         stats["targets"].append(target)
 
