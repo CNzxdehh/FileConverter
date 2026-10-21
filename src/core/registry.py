@@ -127,36 +127,33 @@ def install(lean: bool = False) -> dict:
 
 
 def install_static(lean: bool = False) -> dict:
-    """纯注册表静态级联菜单（推荐）。
+    """单层菜单项：右键 →【转换文件格式】→ 弹编号选单挑转换方案。
 
-    为什么用它：COM 外壳扩展在部分 Win11 上会让 Explorer 在枚举菜单时 fail-fast
-    （KERNELBASE.dll 0xc0000005），而且它本来也进不了 Win11 新菜单。
-    静态级联只是"数据"，Explorer 里不加载我们的任何代码，零崩溃风险。
+    为什么不做级联子菜单：部分 Win11 机器上注册表级联渲染不出来
+    （实测：父项有了 `SubCommands=""` 和子项 `MUIVerb` 仍然点不开），
+    而"一个普通菜单项 + command"是 100% 可靠的。
 
-    覆盖范围：所有文件（`*`）+ 所有文件夹（`Directory`），并置顶（Position=Top）。
+    覆盖范围：所有文件（`*`）+ 所有文件夹（`Directory`），Position=Top 置顶。
     """
     icon = exe_path()
-    items = menu_items()
-    stats = {"items": len(items), "targets": []}
+    cmd = " ".join([*_parts(), "chooser", '"%1"'])
+    stats = {"items": 1, "targets": []}
 
     for target in ("*", "Directory"):
-        parent = rf"Software\Classes\{target}\shell\{PARENT_VERB}"
-        for name, label, cmd in items:
-            base = f"{parent}\\shell\\{name}"
-            _set_str(HIVE, base, "", label)
-            # 级联里的子项文字取自 MUIVerb，只写默认值会渲染成空白 → 点了没反应
-            _set_str(HIVE, base, "MUIVerb", label)
-            _set_str(HIVE, base, "Icon", f'"{icon}",0')
-            _set_str(HIVE, base + r"\command", "", cmd)
-        _set_str(HIVE, parent, "", MENU_NAME)
-        _set_str(HIVE, parent, "MUIVerb", MENU_NAME)
-        _set_str(HIVE, parent, "Icon", f'"{icon}",0')
-        _set_str(HIVE, parent, "Position", "Top")
-        # SubCommands 必须存在且为空字符串：这是"级联菜单"的开关，
-        # 表示子项在下面的 shell 子键里。少了它，父项会被当成普通命令执行，
-        # 弹出"该文件没有与之关联的应用"。
-        _set_str(HIVE, parent, "SubCommands", "")
-        _del_value(HIVE, parent, "Extended")
+        key = rf"Software\Classes\{target}\shell\{PARENT_VERB}"
+        _set_str(HIVE, key, "", MENU_NAME)
+        _set_str(HIVE, key, "MUIVerb", MENU_NAME)
+        _set_str(HIVE, key, "Icon", f'"{icon}",0')
+        _set_str(HIVE, key, "Position", "Top")
+        _set_str(HIVE, key + r"\command", "", cmd)
+        # 不能留级联声明，否则会被当级联渲染成一个点不开的空菜单
+        _del_value(HIVE, key, "SubCommands")
+        _del_value(HIVE, key, "ExtendedSubCommandsKey")
+        _del_value(HIVE, key, "Extended")
+        # 清掉旧版本留下的子项，避免脏数据
+        sub = key + r"\shell"
+        if key_exists(sub):
+            _delete_tree(HIVE, sub)
         stats["targets"].append(target)
 
     return stats

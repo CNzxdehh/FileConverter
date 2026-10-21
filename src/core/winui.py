@@ -195,3 +195,44 @@ def open_url(url: str) -> None:
         ctypes.windll.shell32.ShellExecuteW(None, "open", url, None, None, 1)
     except Exception:
         pass
+
+
+# -------------------------------------------------------------------------- #
+# 原生选择框（TaskDialogIndirect + 命令链接按钮）
+#
+# 用途：右键菜单点【转换文件格式】后，弹一个系统原生对话框让用户点选转换方案。
+# 相比注册表级联子菜单，这条路 100% 可靠（不依赖 shell 的级联渲染）。
+# -------------------------------------------------------------------------- #
+class _TASKDIALOG_BUTTON(ctypes.Structure):
+    _fields_ = [("nButtonID", ctypes.c_int), ("pszButtonText", ctypes.c_wchar_p)]
+
+
+class _TASKDIALOGCONFIG(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_uint),
+        ("hwndParent", ctypes.c_void_p),
+        ("hInstance", ctypes.c_void_p),
+        ("dwFlags", ctypes.c_uint),
+        ("dwCommonButtons", ctypes.c_uint),
+        ("pszWindowTitle", ctypes.c_wchar_p),
+        ("hMainIcon", ctypes.c_void_p),
+        ("pszMainInstruction", ctypes.c_wchar_p),
+        ("pszContent", ctypes.c_wchar_p),
+        ("cButtons", ctypes.c_uint),
+        ("pButtons", ctypes.POINTER(_TASKDIALOG_BUTTON)),
+        ("nDefaultButton", ctypes.c_int),
+        ("cRadioButtons", ctypes.c_uint),
+        ("pRadioButtons", ctypes.c_void_p),
+        ("nDefaultRadioButton", ctypes.c_int),
+        ("pszVerificationText", ctypes.c_wchar_p),
+        ("pszExpandedInformation", ctypes.c_wchar_p),
+        ("pszExpandedControlText", ctypes.c_wchar_p),
+        ("pszCollapsedControlText", ctypes.c_wchar_p),
+        ("hFooterIcon", ctypes.c_void_p),
+        ("pszFooter", ctypes.c_wchar_p),
+        ("pfCallback", ctypes.c_void_p),
+        ("lpCallbackData", ctypes.c_void_p),
+        ("cxWidth", ctypes.c_uint),
+    ]
+
+

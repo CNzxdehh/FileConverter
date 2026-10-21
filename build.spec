@@ -19,7 +19,7 @@ for pkg in ("pdf2docx", "docx", "PIL", "pymupdf", "fitz"):
 hiddenimports += [
     "fitz", "pymupdf", "pymupdf.mupdf",
     "core", "core.config", "core.winui", "core.ffmpegtool",
-    "core.registry", "core.tasks", "core.collector",
+    "core.registry", "core.tasks", "core.collector", "core.chooser",
 ]
 
 block_cipher = None
@@ -63,6 +63,8 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon="app.ico",
+    # comctl32 v6 清单：没有它 TaskDialogIndirect（原生选择框）用不了
+    manifest="app.manifest",
 )
 
 # ---- 可选：改成输出文件夹版（启动快很多，代价是 dist\FileConverter\ 一整个目录）

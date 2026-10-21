@@ -333,6 +333,87 @@ def _convert_one(verb: str, src: Path, cfg: Config, ffmpeg=None):
 
 
 # -------------------------------------------------------------------------- #
+def _applicable_verbs(src: Path) -> list[str]:
+    """这个文件/文件夹能用的转换方案。"""
+    from core.tasks import SPECS, VERB_ORDER
+
+    if src.is_dir():
+        exts = set()
+        try:
+            exts = {p.suffix.lower() for p in src.iterdir() if p.is_file()}
+        except Exception:
+            pass
+        return [v for v in VERB_ORDER if SPECS[v]["accept"] & exts]
+    ext = src.suffix.lower()
+    return [v for v in VERB_ORDER if ext in SPECS[v]["accept"]]
+
+
+def do_chooser(argv: list[str]) -> int:
+    """右键菜单点【转换文件格式】时调用：弹出编号菜单让你选一种转换。
+
+    为什么不用级联子菜单：部分 Win11 机器上注册表级联渲染不出来/点了没反应，
+    而"一个普通菜单项 + 命令"是 100% 可靠的。
+    """
+    from core.tasks import SPECS
+
+    if not argv:
+        winui.error_box("没有拿到文件路径。", "无法转换")
+        return 2
+    src = Path(argv[0])
+    if not src.exists():
+        winui.error_box(f"找不到：{src}", "无法转换")
+        return 2
+
+    verbs = _applicable_verbs(src)
+    if not verbs:
+        tips = "文件夹里没有可转换的文件" if src.is_dir() else f"不支持的文件类型：{src.suffix}"
+        winui.error_box(f"【{src.name}】{tips}。", "没有可用的转换方案")
+        return 1
+
+    labels = [SPECS[v]["label"] for v in verbs]
+    kind = "文件夹（转换里面第一层文件）" if src.is_dir() else f"{src.suffix} 文件"
+    from core import chooser as uichooser
+    pick = uichooser.choose_one(
+        instruction=f"要把【{src.name}】转成什么？",
+        content=f"{kind}，共 {len(labels)} 个可用方案，点一个就开始转换。",
+        options=labels,
+    )
+    if pick == -2:                      # 原生对话框弹不出来 → 回退到控制台选单
+        return _chooser_console(src, verbs, labels)
+    if pick is None or pick < 0:
+        return 0
+    return do_run(verbs[pick], [str(src)], skip_collect=True)
+
+
+def _chooser_console(src: Path, verbs: list[str], labels: list[str]) -> int:
+    """兜底：控制台编号选单（原生对话框不可用时）。"""
+    winui.ensure_console(f"转换：{src.name}")
+    print_safe("=" * 60)
+    print_safe(f"  {src.name}")
+    print_safe("=" * 60)
+    for i, label in enumerate(labels, 1):
+        print_safe(f"  {i:>2}. {label}")
+    print_safe("=" * 60)
+    print_safe("  输入编号回车开始转换，直接回车取消")
+    print_safe("")
+    try:
+        raw = input("  请选择 > ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return 0
+    if not raw:
+        print_safe("已取消。")
+        return 0
+    try:
+        idx = int(raw)
+        if not 1 <= idx <= len(verbs):
+            raise ValueError
+    except ValueError:
+        winui.error_box(f"无效的编号：{raw}", "已取消")
+        return 2
+    return do_run(verbs[idx - 1], [str(src)], skip_collect=True)
+
+
+# -------------------------------------------------------------------------- #
 def do_classic(argv: list[str]) -> int:
     """classic on / classic off：切换「经典完整右键菜单」（一级菜单的关键）。"""
     arg = (argv[0].lower() if argv else "on")
@@ -450,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
             return do_run(rest[0], rest[1:], skip_collect=True)
         if cmd == "classic":
             return do_classic(rest)
+        if cmd == "chooser":
+            return do_chooser(rest)
         if cmd == "util":
             return do_util(rest[0], [Path(p) for p in rest[1:] if Path(p).exists()])
         if cmd == "install":
