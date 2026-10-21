@@ -144,6 +144,8 @@ def install_static(lean: bool = False) -> dict:
         for name, label, cmd in items:
             base = f"{parent}\\shell\\{name}"
             _set_str(HIVE, base, "", label)
+            # 级联里的子项文字取自 MUIVerb，只写默认值会渲染成空白 → 点了没反应
+            _set_str(HIVE, base, "MUIVerb", label)
             _set_str(HIVE, base, "Icon", f'"{icon}",0')
             _set_str(HIVE, base + r"\command", "", cmd)
         _set_str(HIVE, parent, "", MENU_NAME)
