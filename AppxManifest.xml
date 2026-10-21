@@ -58,10 +58,11 @@
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>
 
-        <!-- 注意：不要在这里声明 com:Extension / com:SurrogateServer！
-             那是"跨进程代理"，而 IExplorerCommand 没有 proxy/stub，
-             会导致 dllhost.exe 挂死 + Explorer 在 Windows.UI.FileExplorer.dll 崩 0xc0000005。
-             我们的 CLSID 走 HKCU\Software\Classes\CLSID 的 InprocServer32（in-proc）。
+        <!-- 注意：MSIX 的 com:ComServer 只允许 SurrogateServer（跨进程代理），
+             不允许 InProcessServer；而 IExplorerCommand 没有 proxy/stub，
+             走代理会 dllhost 挂死并崩 Explorer。
+             所以本包只声明 fileExplorerContextMenus（现代菜单项），
+             实际激活走 HKCU\Software\Classes\CLSID 的 InprocServer32（进程内）。
         -->
       </Extensions>
     </Application>

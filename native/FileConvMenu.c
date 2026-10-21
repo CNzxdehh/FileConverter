@@ -390,12 +390,20 @@ static HRESULT STDMETHODCALLTYPE Cmd_GetState(IExplorerCommand *This, IShellItem
 static HRESULT STDMETHODCALLTYPE Cmd_Invoke(IExplorerCommand *This, IShellItemArray *psia,
                                             IBindCtx *pbc) {
     CmdObj *o = (CmdObj *)This;
+    HRESULT hrInit;
     HRESULT hr;
     (void)pbc;
     if (o->verb < 0) return S_OK; /* 父项只负责展开子菜单 */
-    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (!psia) return S_OK;       /* 没有选中项就直接退出，别往下走 */
+
+    /* ⚠️ 坑：Explorer 的 UI 线程本来就已经初始化过 COM（STA）。
+       这时 CoInitializeEx 返回 S_FALSE，**绝不能**再调 CoUninitialize，
+       否则会把 Explorer 的 COM 环境拆掉，后续菜单代码直接 fail-fast
+       （表现为点菜单项后黑屏，事件日志 KERNELBASE.dll 0xc0000005）。
+       只在返回 S_OK（我们真正初始化成功）时才配对 CoUninitialize。 */
+    hrInit = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     hr = LaunchVerb(kVerbs[o->verb].id, psia);
-    CoUninitialize();
+    if (hrInit == S_OK) CoUninitialize();
     return hr;
 }
 

@@ -9,8 +9,8 @@ import os
 import sys
 from ctypes import wintypes
 
-DLL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "native", "FileConvMenu.dll")
+DLL = os.environ.get("FCMENU_DLL") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "native", "FileConvMenu.dll")
 
 shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 ole32 = ctypes.WinDLL("ole32", use_last_error=True)
