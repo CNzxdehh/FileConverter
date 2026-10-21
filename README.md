@@ -165,6 +165,46 @@ FileConverter.exe check            :: 看各项注册状态
 **安装失败时会自动回退**成「单个菜单项 + 弹窗选单」模式（该模式下右键
 【转换文件格式】会弹一个窗口让你挑转换方案），功能不丢，只是没有级联效果。
 
+### 嫌右键菜单太乱？精简它
+
+Windows 上随便一个文件右键，都能挤出二三十项：WPS 的总结全文/视频压缩/提取音频、
+夸克网盘上传、QQ 发送、网易邮箱发送、Clipchamp…… 挤得真正要用的东西都看不见了。
+
+```bat
+python tools\menu_cleaner.py scan              :: 先看看能禁哪些（只读，不改）
+python tools\menu_cleaner.py apply             :: 精简
+python tools\menu_cleaner.py restore           :: 一键还原
+python tools\menu_cleaner.py msix-scan         :: 列出装了菜单扩展的 MSIX 包
+python tools\menu_cleaner.py msix-uninstall    :: 卸载 WPS/QQ 的右键扩展包
+```
+
+**三条安全保证**：
+
+1. **全部只写 HKCU**（用户级覆盖系统级），不动 HKLM、不卸载软件、不删文件
+2. **每条改动都写进 `menu_backup.json`**，`restore` 原样还原
+3. **策略是「白名单优先 + 只禁黑名单」** —— 没命中的一律不动。
+   宁可漏禁也不能误伤（漏了下次加一条关键字就行，误伤会影响日常）
+
+保留名单：`7-Zip`、`Bandizip`、Windows Defender 扫描、本工具，以及全部系统常规项。
+
+**两类注册来源要分开处理，这是踩过坑的**：
+
+| 来源 | 长什么样 | 怎么禁 |
+|---|---|---|
+| COM 外壳扩展 | 注册在 `\shellex\ContextMenuHandlers` 下 | 在**挂载点**加 `LegacyDisable` |
+| MSIX 包扩展 | 包 manifest 里 `fileExplorerContextMenus` | **注册表无效**，只能卸载包 |
+
+> ⛔ **切勿在 `HKCU\Software\Classes\CLSID\{...}` 下建「只有 `LegacyDisable`、
+> 没有 `InprocServer32`」的键。** HKCU 下这个键只要存在就会**完全顶掉** HKLM 的同名键，
+> COM 加载时找不到服务程序 → 整条菜单构建中断。本项目实测就是这么把**本工具自己的
+> 菜单项**也一起搞没的。正确做法是在挂载点上标记，完全不碰 CLSID。
+
+MSIX 包（`wpsappext1/2/3`、`QQExtension`）的 COM 类**根本不在注册表里**
+（HKCU/HKLM 的 `ActivatableClasses\Package` 和 `CLSID` 下都查不到），
+由包系统内部数据库管理，摘注册表无效。但它们本身是**纯右键扩展包**，
+卸载掉**不影响 WPS / QQ 主程序**，所以 `msix-uninstall` 直接卸包。
+（`Clipchamp` 是应用本体，默认不动，要卸得显式加 `--with-optional`。）
+
 ### ffmpeg（音视频转换必需）
 
 程序启动时按顺序找 ffmpeg：

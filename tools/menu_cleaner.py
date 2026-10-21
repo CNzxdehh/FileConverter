@@ -56,6 +56,69 @@ DEFAULT_KEEP = [
     "windows defender", "shellext.dll",   # Defender 扫描，安全功能留着
 ]
 
+# --------------------------------------------------------------------------- #
+# MSIX 包：注册表这条路是死的
+#
+# 实测：`wpsappext1/2/3`、`QQExtension`、`Clipchamp` 的 COM 类**根本不在注册表里**
+#   - HKCU\Software\Classes\ActivatableClasses\Package → 0 个包
+#   - HKLM\SOFTWARE\Classes\ActivatableClasses\Package → 只有 1 个（无关的）
+#   - HKLM\SOFTWARE\Classes\CLSID 里也没有它们的 CLSID
+# 它们由包系统（PackageGraph / StateRepository 数据库）内部管理，**摘注册表无效**。
+#
+# 唯一可行的办法：**卸载这些包**。好在它们本身就是纯"右键扩展包" ——
+# 卸掉不影响主程序（WPS 还能用、QQ 还能用），只是不再往右键菜单里塞东西。
+# 这是用户级操作，不需要管理员。
+# --------------------------------------------------------------------------- #
+# 默认卸：纯扩展包，零副作用
+MSIX_REMOVE_SAFE = ["wpsappext", "qqextension"]
+# 需要显式点名才卸：Clipchamp 是 Windows 自带应用本体，卸了要用商店重装
+MSIX_REMOVE_OPTIONAL = ["clipchamp"]
+
+
+def _ps(script: str, timeout: int = 120) -> tuple[int, str]:
+    p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                        "-Command", script], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=timeout)
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
+
+
+def msix_scan() -> list[str]:
+    """列出装了右键菜单扩展的包。"""
+    _, out = _ps("Get-AppxPackage | Where-Object { $_.InstallLocation -and "
+                 "(Test-Path (Join-Path $_.InstallLocation 'AppxManifest.xml')) } "
+                 "| ForEach-Object { if (Select-String -Path "
+                 "(Join-Path $_.InstallLocation 'AppxManifest.xml') "
+                 "-Pattern 'fileExplorerContextMenus' -Quiet -ErrorAction SilentlyContinue) "
+                 "{ $_.Name } }", timeout=180)
+    return [l.strip() for l in out.splitlines() if l.strip() and " " not in l.strip()]
+
+
+def msix_uninstall(include_optional: bool = False) -> list[str]:
+    """卸载黑名单里的右键扩展包。返回实际卸载的包名。
+
+    ⚠️ 必须**一个前缀匹配多个包**：`wpsappext` 要一次卸掉 wpsappext1/2/3 三个。
+    早期版本用 `next(... )` 只取第一个命中，导致 2/3 永远漏掉。
+    """
+    targets = list(MSIX_REMOVE_SAFE)
+    if include_optional:
+        targets += MSIX_REMOVE_OPTIONAL
+    installed = msix_scan()
+    done = []
+    for t in targets:
+        # 前缀匹配全部（wpsappext -> wpsappext1/2/3）
+        hits = [p for p in installed if p.lower().startswith(t.lower())]
+        if not hits:
+            print(f"  [跳过] {t}：没装")
+            continue
+        for hit in hits:
+            code, out = _ps(f"Get-AppxPackage -Name '{hit}' | Remove-AppxPackage", timeout=180)
+            print(f"  [{'已卸载' if code == 0 else '失败'}] {hit}")
+            if code == 0:
+                done.append(hit)
+            else:
+                print("        " + out.strip()[:160])
+    return done
+
 
 # --------------------------------------------------------------------------- #
 def _read(hive: int, path: str, name: str = "") -> str | None:
@@ -221,6 +284,9 @@ def decide(items: list[dict], keep: list[str], block: list[str]) -> list[dict]:
     uniq, seen = [], set()
     for it in plan:
         p = disable_point(it)
+        if p is None:
+            it["reason"] = "MSIX 走挂载点这条路不通，改用 msix-block"
+            continue
         if p in seen:
             continue
         seen.add(p)
@@ -229,10 +295,48 @@ def decide(items: list[dict], keep: list[str], block: list[str]) -> list[dict]:
 
 
 def disable_point(it: dict) -> str | None:
-    """返回禁用点所在的 HKCU 路径（加 LegacyDisable）。"""
-    if it["kind"] in ("handler", "msix"):
-        return rf"Software\Classes\CLSID\{it['clsid']}"
-    return rf"Software\Classes\{it['base']}\{it['reg']}"
+    """返回禁用点所在的 HKCU 路径（加 LegacyDisable）。返回 None = 这项没法用这个办法禁。
+
+    ⛔ 血泪教训：**绝对不要在 `HKCU\\Software\\Classes\\CLSID\\{...}` 下建
+    「只有 LegacyDisable、没有 InprocServer32」的键**。
+    因为 HKCU\\Software\\Classes\\CLSID\\{X} 只要存在就会**完全顶掉** HKLM 的同名键，
+    COM 去加载时找不到服务程序 → 轻则扩展静默失效，重则整条菜单构建中断。
+    本机实测就是这么把本工具自己的菜单项也搞没的（用户反馈"直接消失了，找都找不到"）。
+    而且对 MSIX 包注册的类，这种写法**根本不起作用**（WPS/QQ/Clipchamp 全部还在）。
+
+    ✅ 正确做法：**在「挂载点」上加 LegacyDisable**，完全不碰 CLSID：
+        HKCU\\Software\\Classes\\*\\shellex\\ContextMenuHandlers\\<注册名>\\LegacyDisable
+    Explorer 读到挂载点被标记就跳过，不加载那个 COM 类，干净且零副作用。
+    """
+    if it["kind"] == "handler":
+        return rf"Software\Classes\{it['base']}\{it['reg']}"
+    if it["kind"] == "verb":
+        return rf"Software\Classes\{it['base']}\{it['reg']}"
+    return None          # msix：这条路走不通，见下面的 block_msix()
+
+
+def block_msix() -> list[dict]:
+    """MSIX 包的菜单扩展是另一套机制（包身份 + ActivatableClasses），
+    挂载点上根本没有键可禁。唯一可靠的办法是把它的 Server 类从注册表摘掉。
+
+    ⚠️ 这属于「摘掉注册」而不是「打个标记」，风险高一档，所以单独一个子命令，
+    默认不执行，必须显式调用 `msix-block`。删之前把整棵子树备份到文件里。
+    """
+    out = []
+    for it in scan_msix():
+        pkg = it["reg"]
+        # 从包全名里去掉版本号段，得到包目录名（ActivatableClasses 用的是这个）
+        folder = pkg.split("_")[0] + "_" + pkg.split("_")[1] + "_" + pkg.split("_")[2] \
+            if pkg.count("_") >= 3 else pkg
+        base = rf"Software\Classes\ActivatableClasses\Package\{folder}"
+        srv = rf"{base}\Server\{it['clsid']}"
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, srv):
+                pass
+        except OSError:
+            continue
+        out.append(dict(it, msix_folder=folder, server_key=srv))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -327,6 +431,25 @@ def main(argv: list[str]) -> int:
     if cmd == "restore":
         r = restore()
         print(f"已还原 {r.get('restored', 0)} 项  {r.get('note', '')}")
+        print("请重启资源管理器：Stop-Process -Name explorer -Force")
+        return 0
+
+    if cmd == "msix-scan":
+        pkgs = msix_scan()
+        print(f"装了文件资源管理器菜单扩展的包，共 {len(pkgs)} 个：\n")
+        for p in pkgs:
+            tag = ""
+            if any(p.lower().startswith(t) for t in MSIX_REMOVE_SAFE):
+                tag = "  ← 默认会卸（纯扩展包，不影响主程序）"
+            elif any(p.lower().startswith(t) for t in MSIX_REMOVE_OPTIONAL):
+                tag = "  ← 需 --with-optional 才卸（是应用本体）"
+            print(f"  {p}{tag}")
+        return 0
+
+    if cmd == "msix-uninstall":
+        print("卸载右键扩展包：")
+        done = msix_uninstall(include_optional="--with-optional" in argv)
+        print(f"\n已卸载 {len(done)} 个：{done or '无'}")
         print("请重启资源管理器：Stop-Process -Name explorer -Force")
         return 0
 

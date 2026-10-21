@@ -168,8 +168,9 @@ def main() -> int:
             break
 
     if not menu_hwnd:
-        # 路线 B：鼠标右键 —— 不依赖前台，只要求窗口可见
-        print("  键盘路线没弹出菜单，改走鼠标右键…")
+        # 路线 B：鼠标 —— 先左键点中第一个文件，再右键它
+        # ⚠️ 必须点中文件：直接右键列表空白处拿到的是「文件夹背景」菜单
+        #    （查看/排序/粘贴/新建…），里面当然没有我们的项，会误判成"菜单项消失"。
         view = u32.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None)
         target = view if view else hwnd
         rect = wintypes.RECT()
@@ -179,11 +180,28 @@ def main() -> int:
             print("  [FAIL] 拿不到文件列表区域")
             u32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
             return 1
-        cx = (rect.left + rect.right) // 2
-        cy = rect.top + int((rect.bottom - rect.top) * 0.45)
-        print(f"  右键坐标 ({cx}, {cy})")
-        u32.SetCursorPos(cx, cy)
-        time.sleep(0.3)
+        # 列表视图里第一个文件大约在左上角
+        fx = rect.left + 45
+        fy = rect.top + 32
+
+        # ⚠️ 必须先把窗口提到最上层：被别的程序（WorkBuddy/浏览器）挡住时，
+        #    鼠标点击会打在覆盖窗口上，菜单永远弹不出来。
+        #    HWND_TOPMOST = -1，HWND_NOTOPMOST = -2，SWP_NOMOVE|NOSIZE|SHOWWINDOW = 0x0043
+        SWP = 0x0001 | 0x0002 | 0x0040
+        u32.SetWindowPos(hwnd, ctypes.c_void_p(-1), 0, 0, 0, 0, SWP)
+        time.sleep(0.5)
+
+        print(f"  文件列表区域 {rect.left},{rect.top} → {rect.right},{rect.bottom}")
+        print(f"  左键选中第一个文件 ({fx}, {fy})")
+        u32.SetCursorPos(fx, fy)
+        time.sleep(0.4)
+        u32.mouse_event(0x0002, 0, 0, 0, 0)   # LEFTDOWN
+        time.sleep(0.05)
+        u32.mouse_event(0x0004, 0, 0, 0, 0)   # LEFTUP
+        time.sleep(0.6)
+        u32.SetCursorPos(fx, fy)
+        time.sleep(0.2)
+        print(f"  右键同一位置 ({fx}, {fy})")
         u32.mouse_event(0x0008, 0, 0, 0, 0)   # RIGHTDOWN
         time.sleep(0.08)
         u32.mouse_event(0x0010, 0, 0, 0, 0)   # RIGHTUP
@@ -193,6 +211,7 @@ def main() -> int:
             if ws:
                 menu_hwnd = ws[0]
                 break
+        u32.SetWindowPos(hwnd, ctypes.c_void_p(-2), 0, 0, 0, 0, SWP)
 
     if not menu_hwnd:
         print("  [FAIL] 两条路线都没能弹出菜单（前台/输入注入被系统限制，属测试环境问题）")
