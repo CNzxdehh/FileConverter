@@ -352,49 +352,45 @@ def do_classic(argv: list[str]) -> int:
 
 
 def do_install(argv: list[str]) -> int:
-    """装菜单：现代菜单（MSIX 稀疏包）→ COM 注册 → 经典级联菜单，逐级回退。"""
-    force_cascade = "--cascade" in argv
+    """装菜单。默认【纯注册表静态级联】——Explorer 里不加载任何代码，最稳。
 
-    com_ok, com_msg, msix_ok, msix_msg = False, "跳过", False, "跳过"
-    if not force_cascade:
+    `--com` 才会走 COM 外壳扩展 + MSIX（部分 Win11 上会让 Explorer
+    枚举菜单时 fail-fast，且换不来新菜单，不推荐）。
+    """
+    use_com = "--com" in argv
+
+    if use_com:
         info = registry.install_com()
+        com_ok, com_msg = False, info.get("reason", "")
         if info.get("ok"):
             com_ok, com_msg = registry.com_verify()
-        else:
-            com_msg = info.get("reason", "未知原因")
         if com_ok:
             msix = registry.install_msix()
-            msix_ok = bool(msix.get("ok"))
-            msix_msg = msix.get("pkg") or msix.get("reason", "")
-
-    if msix_ok:
-        registry.remove_cascade()
-        registry.set_classic_menu(False)
-        mode = "msix"
-        body = ("安装方式：【MSIX 稀疏包 + COM 外壳扩展】\n"
-                "→ 右键任意文件/文件夹，Windows 11 一级菜单里直接有【转换文件格式】。\n"
-                f"包名：{msix_msg}\n"
-                "Windows 11 默认菜单样式保持不变。")
-    elif com_ok:
-        registry.remove_cascade()
-        registry.set_classic_menu(True)
-        mode = "com+classic"
-        body = ("COM 扩展已就绪，但现代菜单包注册失败：\n"
-                f"  {msix_msg}\n\n"
-                "已改用【经典完整右键菜单】方案，菜单项同样在一级（系统菜单样式会变成 Windows 10 风格）。")
+            registry.uninstall_static()
+            registry.set_classic_menu(not msix.get("ok"))
+            mode = "com"
+            body = ("已安装【COM 外壳扩展】。\n自检：" + com_msg + "\n"
+                    + f"现代菜单包：{'已注册' if msix.get('ok') else '未注册'}")
+        else:
+            mode = "fallback"
+            registry.install_static()
+            registry.set_classic_menu(True)
+            body = f"COM 安装失败（{com_msg}），已回退静态菜单。"
     else:
-        registry.install(lean=False)
+        registry.remove_com()
+        registry.remove_cascade()
+        registry.uninstall_static()
+        stats = registry.install_static()
         registry.set_classic_menu(True)
-        mode = "cascade"
-        body = (f"COM 扩展不可用（{com_msg}），已回退到经典级联菜单方案。\n"
-                "已切到 Windows 10 风格完整右键菜单，菜单项在一级。")
+        mode = "static"
+        cover = " + ".join("所有文件" if t == "*" else "所有文件夹" for t in stats["targets"])
+        body = ("安装方式：【纯注册表静态级联菜单】\n"
+                + f"菜单项：{stats['items']} 个，覆盖 {cover}\n"
+                + "已切到经典完整右键菜单，菜单项置顶（Position=Top）。\n"
+                + "Explorer 里不加载本程序任何代码 —— 不会崩。")
 
     registry.notify_explorer()
-    winui.info_box(
-        f"右键菜单已安装（当前用户，无需管理员）。\n\n{body}\n\n"
-        f"注册位置：HKEY_CURRENT_USER\\{registry.PARENT_KEY}",
-        "安装完成",
-    )
+    winui.info_box("右键菜单已安装。\n\n" + body, "安装完成")
     print_safe(f"install mode = {mode}")
     return 0
 
@@ -402,17 +398,17 @@ def do_install(argv: list[str]) -> int:
 def do_uninstall(argv: list[str]) -> int:
     purge = "--purge" in argv
     registry.uninstall_msix()
-    removed = registry.uninstall(remove_config=purge)
     registry.remove_com()
-    registry.set_classic_menu(False)   # 还原 Win11 默认菜单样式
+    registry.uninstall_static()
+    removed = registry.uninstall(remove_config=purge)
+    registry.set_classic_menu(False)
     registry.notify_explorer()
     winui.info_box(
-        f"右键菜单已删除。\n\n"
-        f"MSIX 菜单包：已移除\n"
-        f"COM 外壳扩展：已注销\n"
-        f"级联菜单：{'已删除' if removed['menu'] else '本来就不存在'}\n"
-        f"临时文件：已清理\n"
-        f"菜单样式：已还原 Windows 11 默认\n"
+        "右键菜单已删除。\n\n"
+        "静态级联菜单：已清理（文件 + 文件夹）\n"
+        "COM 外壳扩展：已注销\n"
+        "MSIX 菜单包：已移除\n"
+        "菜单样式：已还原 Windows 11 默认\n"
         f"配置数据：{'已删除' if removed.get('config') else '保留（如需删除：uninstall --purge）'}",
         "卸载完成",
     )

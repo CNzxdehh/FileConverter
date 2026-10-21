@@ -17,7 +17,8 @@ import winreg
 from pathlib import Path
 
 HIVE = winreg.HKEY_CURRENT_USER
-PARENT_KEY = r"Software\Classes\*\shell\FileConv"
+PARENT_VERB = "FileConv"
+PARENT_KEY = rf"Software\Classes\*\shell\{PARENT_VERB}"
 CMD_STORE = r"Software\Microsoft\Windows\CurrentVersion\Explorer\CommandStore\shell"
 VERB_PREFIX = "FileConv."
 MENU_NAME = "转换文件格式"
@@ -125,8 +126,50 @@ def install(lean: bool = False) -> dict:
     return {"items": len(items), "target": launcher()}
 
 
+def install_static(lean: bool = False) -> dict:
+    """纯注册表静态级联菜单（推荐）。
+
+    为什么用它：COM 外壳扩展在部分 Win11 上会让 Explorer 在枚举菜单时 fail-fast
+    （KERNELBASE.dll 0xc0000005），而且它本来也进不了 Win11 新菜单。
+    静态级联只是"数据"，Explorer 里不加载我们的任何代码，零崩溃风险。
+
+    覆盖范围：所有文件（`*`）+ 所有文件夹（`Directory`），并置顶（Position=Top）。
+    """
+    icon = exe_path()
+    items = menu_items()
+    stats = {"items": len(items), "targets": []}
+
+    for target in ("*", "Directory"):
+        parent = rf"Software\Classes\{target}\shell\{PARENT_VERB}"
+        for name, label, cmd in items:
+            base = f"{parent}\\shell\\{name}"
+            _set_str(HIVE, base, "", label)
+            _set_str(HIVE, base, "Icon", f'"{icon}",0')
+            _set_str(HIVE, base + r"\command", "", cmd)
+        _set_str(HIVE, parent, "", MENU_NAME)
+        _set_str(HIVE, parent, "MUIVerb", MENU_NAME)
+        _set_str(HIVE, parent, "Icon", f'"{icon}",0')
+        _set_str(HIVE, parent, "Position", "Top")
+        # 父键绝不能写 SubCommands（写了整项消失），并且要清掉旧版本残留
+        _del_value(HIVE, parent, "SubCommands")
+        _del_value(HIVE, parent, "Extended")
+        stats["targets"].append(target)
+
+    return stats
+
+
+def uninstall_static() -> int:
+    n = 0
+    for target in ("*", "Directory"):
+        key = rf"Software\Classes\{target}\shell\{PARENT_VERB}"
+        if key_exists(key):
+            _delete_tree(HIVE, key)
+            n += 1
+    return n
+
+
 def remove_cascade() -> None:
-    """删掉经典级联菜单（COM 模式时用不到，避免右键里出现两份）。"""
+    """删掉经典级联菜单（COM/静态模式的旧键）。"""
     _delete_tree(HIVE, PARENT_KEY)
     for name, _, _ in menu_items():
         _delete_tree(HIVE, f"{CMD_STORE}\\{name}")
