@@ -191,8 +191,16 @@ python tools\menu_cleaner.py msix-uninstall    :: 卸载 WPS/QQ 的右键扩展�
 
 | 来源 | 长什么样 | 怎么禁 |
 |---|---|---|
-| COM 外壳扩展 | 注册在 `\shellex\ContextMenuHandlers` 下 | 在**挂载点**加 `LegacyDisable` |
+| COM 外壳扩展 | 注册在 `\shellex\ContextMenuHandlers` 下 | **在 CLSID 上**加 `LegacyDisable`（先把整个 CLSID 克隆到 HKCU） |
 | MSIX 包扩展 | 包 manifest 里 `fileExplorerContextMenus` | **注册表无效**，只能卸载包 |
+
+> ⛔ **禁用标记必须加在 CLSID 上，不能加在挂载点上。** Explorer 的处理逻辑是
+> 「读挂载点 → 取 CLSID → 加载类」，挂载点上的 `LegacyDisable` 会被**直接忽略**。
+> 实测：挂载点标了 5 个，用户截图里夸克和 WPS 的项原封不动。ShellExView 也是加在 CLSID 上的。
+
+> ✅ **正确做法**：先把 HKCR 下该 CLSID 的**全部值和子键完整克隆到 HKCU**，
+> 再加 `LegacyDisable`。这样 HKCU 的键是完整副本 + 禁用标记，
+> 既禁得住，又不会出现「顶掉之后找不到服务程序」的问题。
 
 > ⛔ **切勿在 `HKCU\Software\Classes\CLSID\{...}` 下建「只有 `LegacyDisable`、
 > 没有 `InprocServer32`」的键。** HKCU 下这个键只要存在就会**完全顶掉** HKLM 的同名键，

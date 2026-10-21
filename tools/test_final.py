@@ -67,10 +67,14 @@ print("=" * 74)
 print("二、菜单精简状态")
 print("=" * 74)
 import winreg
-H = r"Software\Classes\*\shellex\ContextMenuHandlers"
-disabled = []
+
+# 禁用点现在在 CLSID 上（Explorer 只认这里，挂载点上的 LegacyDisable 会被忽略）。
+# 判定标准：HKCU 下带 LegacyDisable 的 CLSID，且**必须同时有 InprocServer32**
+# —— 没有它就是"半截键"，会顶掉 HKLM 导致菜单构建中断。
+CLSID_BASE = r"Software\Classes\CLSID"
+disabled, halfbaked = [], []
 try:
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, H) as k:
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, CLSID_BASE) as k:
         i = 0
         while True:
             try:
@@ -78,14 +82,27 @@ try:
             except OSError:
                 break
             try:
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, rf"{H}\{sub}") as c:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, rf"{CLSID_BASE}\{sub}") as c:
                     winreg.QueryValueEx(c, "LegacyDisable")
-                    disabled.append(sub)
             except OSError:
-                pass
+                continue
+            disabled.append(sub)
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                    rf"{CLSID_BASE}\{sub}\InprocServer32") as s:
+                    dll = str(winreg.QueryValueEx(s, "")[0]).strip('"')
+                if not Path(dll).is_file():
+                    halfbaked.append((sub, "DLL 不存在"))
+            except OSError:
+                halfbaked.append((sub, "缺 InprocServer32（半截键！）"))
 except OSError:
     pass
-check(len(disabled) >= 5, f"挂载点已禁用 {len(disabled)} 项: {disabled}")
+
+check(len(disabled) >= 5,
+      f"CLSID 层面已禁用 {len(disabled)} 个: {disabled}")
+check(not halfbaked,
+      f"没有半截键（每个禁用项都有完整 InprocServer32）"
+      + (f" —— 问题: {halfbaked}" if halfbaked else ""))
 
 # 必须没被动过的
 must_keep = ["FileConv", "7-Zip", "EPP"]

@@ -297,46 +297,62 @@ def decide(items: list[dict], keep: list[str], block: list[str]) -> list[dict]:
 def disable_point(it: dict) -> str | None:
     """返回禁用点所在的 HKCU 路径（加 LegacyDisable）。返回 None = 这项没法用这个办法禁。
 
-    ⛔ 血泪教训：**绝对不要在 `HKCU\\Software\\Classes\\CLSID\\{...}` 下建
-    「只有 LegacyDisable、没有 InprocServer32」的键**。
-    因为 HKCU\\Software\\Classes\\CLSID\\{X} 只要存在就会**完全顶掉** HKLM 的同名键，
-    COM 去加载时找不到服务程序 → 轻则扩展静默失效，重则整条菜单构建中断。
-    本机实测就是这么把本工具自己的菜单项也搞没的（用户反馈"直接消失了，找都找不到"）。
-    而且对 MSIX 包注册的类，这种写法**根本不起作用**（WPS/QQ/Clipchamp 全部还在）。
+    ⛔ 血泪教训一：**不要在 `HKCU\\...\\CLSID\\{...}` 下建「只有 LegacyDisable、
+    没有 InprocServer32」的半截键**。HKCU 下这个键只要存在就**完全顶掉** HKLM 的
+    同名键，COM 加载时找不到服务程序 → 整条菜单构建中断。本机实测就是这么把
+    本工具自己的菜单项也搞没的（用户反馈"直接消失了，找都找不到"）。
 
-    ✅ 正确做法：**在「挂载点」上加 LegacyDisable**，完全不碰 CLSID：
-        HKCU\\Software\\Classes\\*\\shellex\\ContextMenuHandlers\\<注册名>\\LegacyDisable
-    Explorer 读到挂载点被标记就跳过，不加载那个 COM 类，干净且零副作用。
+    ⛔ 血泪教训二：**禁用的标记必须加在 CLSID 上，不能加在挂载点上**。
+    Explorer 的处理逻辑是「读挂载点 → 取 CLSID → 加载类」，
+    挂载点上的 LegacyDisable 会被**直接忽略**（实测：挂载点标了 5 个，
+    用户截图里夸克和 WPS 的项原封不动）。ShellExView 就是加在 CLSID 上的。
+
+    ✅ 正确做法：**先把 HKCR 下该 CLSID 的全部值和子键完整克隆到 HKCU**，
+    再加 LegacyDisable。这样 HKCU 的键是完整副本 + 禁用标记，
+    既禁得住，又不会出现"顶掉之后找不到服务程序"的问题。
     """
     if it["kind"] == "handler":
-        return rf"Software\Classes\{it['base']}\{it['reg']}"
+        return rf"Software\Classes\CLSID\{it['clsid']}"
     if it["kind"] == "verb":
         return rf"Software\Classes\{it['base']}\{it['reg']}"
-    return None          # msix：这条路走不通，见下面的 block_msix()
+    return None          # msix：这条路走不通，见 msix-uninstall
 
 
-def block_msix() -> list[dict]:
-    """MSIX 包的菜单扩展是另一套机制（包身份 + ActivatableClasses），
-    挂载点上根本没有键可禁。唯一可靠的办法是把它的 Server 类从注册表摘掉。
+def _copy_key(src_hive: int, src: str, dst_hive: int, dst: str) -> None:
+    """把一个注册表键（值 + 全部子键）克隆到另一个位置。"""
+    try:
+        with winreg.OpenKey(src_hive, src) as s:
+            i = 0
+            while True:
+                try:
+                    name, val, typ = winreg.EnumValue(s, i); i += 1
+                except OSError:
+                    break
+                with winreg.CreateKeyEx(dst_hive, dst, 0, winreg.KEY_SET_VALUE) as d:
+                    winreg.SetValueEx(d, name, 0, typ, val)
+            for sub in _keys(src_hive, src):
+                _copy_key(src_hive, rf"{src}\{sub}", dst_hive, rf"{dst}\{sub}")
+    except OSError:
+        pass
 
-    ⚠️ 这属于「摘掉注册」而不是「打个标记」，风险高一档，所以单独一个子命令，
-    默认不执行，必须显式调用 `msix-block`。删之前把整棵子树备份到文件里。
-    """
-    out = []
-    for it in scan_msix():
-        pkg = it["reg"]
-        # 从包全名里去掉版本号段，得到包目录名（ActivatableClasses 用的是这个）
-        folder = pkg.split("_")[0] + "_" + pkg.split("_")[1] + "_" + pkg.split("_")[2] \
-            if pkg.count("_") >= 3 else pkg
-        base = rf"Software\Classes\ActivatableClasses\Package\{folder}"
-        srv = rf"{base}\Server\{it['clsid']}"
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, srv):
-                pass
-        except OSError:
-            continue
-        out.append(dict(it, msix_folder=folder, server_key=srv))
-    return out
+
+def clone_and_disable(clsid_path: str) -> bool:
+    """把 HKCR 下的 CLSID 完整克隆到 HKCU，再加 LegacyDisable。"""
+    clsid = clsid_path.rsplit("\\", 1)[-1]
+    _copy_key(winreg.HKEY_CLASSES_ROOT, rf"CLSID\{clsid}",
+              winreg.HKEY_CURRENT_USER, clsid_path)
+    # 回读确认 InprocServer32 已克隆过来（没有它就成了半截键）
+    if _read(winreg.HKEY_CURRENT_USER, rf"{clsid_path}\InprocServer32") is None:
+        # 该 CLSID 可能不是 InprocServer32 型，补拷 LocalServer32 / 顶层值
+        _copy_key(winreg.HKEY_CLASSES_ROOT, rf"CLSID\{clsid}\LocalServer32",
+                  winreg.HKEY_CURRENT_USER, rf"{clsid_path}\LocalServer32")
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, clsid_path, 0,
+                                winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, "LegacyDisable", 0, winreg.REG_SZ, "")
+        return True
+    except OSError:
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -352,19 +368,39 @@ def apply(plan: list[dict]) -> dict:
         path = disable_point(it)
         if not path:
             continue
+        # 只记录「本来就没有这个键」的；本来有的只记名字，还原时只删 LegacyDisable
+        key_existed = key_exists_hkcu(path)
         existed = _read(winreg.HKEY_CURRENT_USER, path, "LegacyDisable") is not None
         if not existed:
-            backup.append(dict(path=path, reg=it["reg"], kind=it["kind"]))
+            backup.append(dict(path=path, reg=it["reg"], kind=it["kind"],
+                               key_existed=key_existed))
         try:
-            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, path, 0,
-                                    winreg.KEY_SET_VALUE) as k:
-                winreg.SetValueEx(k, "LegacyDisable", 0, winreg.REG_SZ, "")
-            done += 1
+            if it["kind"] == "handler":
+                # ⛔ 必须先完整克隆 CLSID 再标禁用，否则就是"半截键"，
+                #    会把 HKLM 的 InprocServer32 顶掉 → 菜单构建中断（已踩过）
+                okk = clone_and_disable(path)
+            else:
+                with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, path, 0,
+                                        winreg.KEY_SET_VALUE) as k:
+                    winreg.SetValueEx(k, "LegacyDisable", 0, winreg.REG_SZ, "")
+                okk = True
+            if okk:
+                done += 1
+            else:
+                print(f"  [失败] {it['reg']}: 无法写入 {path}")
         except OSError as e:
             print(f"  [失败] {it['reg']}: {e}")
     BACKUP.parent.mkdir(parents=True, exist_ok=True)
     BACKUP.write_text(json.dumps(backup, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"applied": done, "backup": str(BACKUP)}
+
+
+def key_exists_hkcu(path: str) -> bool:
+    try:
+        winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CURRENT_USER, path))
+        return True
+    except OSError:
+        return False
 
 
 def restore() -> dict:
@@ -373,8 +409,20 @@ def restore() -> dict:
     backup = json.loads(BACKUP.read_text(encoding="utf-8"))
     n = 0
     for rec in backup:
+        path = rec["path"]
+        # 键本来就是我们新建的 → 整个删掉（只删 LegacyDisable 会留下空壳，
+        # 空壳 CLSID 键依然会顶掉 HKLM，是个隐患）
+        if not rec.get("key_existed"):
+            try:
+                winreg.DeleteKeyEx(winreg.HKEY_CURRENT_USER, path)
+                n += 1
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            continue
         try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, rec["path"], 0,
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0,
                                 winreg.KEY_SET_VALUE) as k:
                 winreg.DeleteValue(k, "LegacyDisable")
             n += 1
