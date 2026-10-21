@@ -100,37 +100,70 @@ FileConverter.exe uninstall        :: 卸载
 FileConverter.exe uninstall --purge:: 连配置一起删
 ```
 
-> **Windows 11 注意**：系统默认把第三方右键项收进"显示更多选项"（经典菜单）里。
-> 在文件上右键 → 点最下面的**显示更多选项** → 就能看到【转换文件格式】。
-> 这是 Windows 11 对静态菜单项的限制，只有 COM 外壳扩展才能进一级菜单。
+### 菜单长什么样
 
-### 一级菜单（Windows 11 现代右键菜单）
+右键文件 → 菜单里出现 **`转换文件格式 ▶`**，鼠标移上去（或点开）展开 17 个转换项 ——
+和 Bandizip / 7-Zip 那种级联菜单完全一样。支持多选，一次选 10 个文件点一下全转。
 
-结论先说：**Windows 11 的现代紧凑菜单，只接受 MSIX 包里声明的菜单扩展**，
-纯注册表（包括 `ExplorerCommandHandler`）只会出现在「显示更多选项」的旧菜单里。
-QQ、WPS、Bandizip 在现代菜单里的项，全部来自 MSIX 稀疏包（sparse package）。
+```
+   5. Bandizip (B)      ▶
+  10. 7-Zip             ▶
+  12. 转换文件格式        ▶    ← 本工具
+      ├─ PDF 转 Word (.docx)
+      ├─ Word 转 PDF
+      ├─ PDF 转 TXT
+      └─ …… 共 17 项
+```
 
-本工具的做法（三层，逐级回退）：
+### 实现方式：`IContextMenu` 外壳扩展
 
-| 层级 | 方式 | 效果 |
-|---|---|---|
-| 1 | **MSIX 稀疏包** + `windows.fileExplorerContextMenus` + COM 扩展 | 文件/文件夹右键**一级菜单**直接可见，Win11 默认样式不变 |
-| 2 | COM 扩展（`ExplorerCommandHandler`）+ 经典完整菜单 | 一级可见，但菜单样式会变成 Windows 10 风格 |
-| 3 | 纯注册表级联菜单 | 只出现在「显示更多选项」里 |
+菜单由 `FileConvCtx.dll`（纯 C，约 60 KB）自己画：
+`QueryContextMenu` 里 `CreatePopupMenu()` 填 17 项，再 `InsertMenu(MF_POPUP)` 挂到右键菜单上。
+注册在 HKCU，**不需要管理员权限**：
 
-`install` 会自动选能用的最高层级，并做自检；失败自动往下降。
+```
+Software\Classes\CLSID\{B2C4E111-7A9D-4C3E-8F21-9D4E5A6B7C8D}\InprocServer32  → FileConvCtx.dll
+Software\Classes\{*|Directory}\shellex\ContextMenuHandlers\FileConv           → 上面的 CLSID
+```
 
-- 第 1 层需要系统开启**开发者模式**（免签名注册稀疏包）：`Add-AppxPackage -Register`.
-  检查：`设置 → 系统 → 开发者选项`。
-- 组件：`FileConvMenu.dll`（57 KB，纯 C 写的 IExplorerCommand）+ `AppxManifest.xml` + `Assets\`。
-- 卸载会同时移除 MSIX 包、注销 COM、删除注册表项，并还原 Win11 默认菜单样式。
+**为什么不用纯注册表级联**：父键加 `SubCommands=""`、子项加 `MUIVerb` 这套"静态级联"
+写法在 Win11 build 26200 上**渲染不出来**（菜单项要么不显示，要么点开是空的）。
+所以只能走 shell 扩展自己 `InsertMenu(MF_POPUP)` 的路子 —— 这也是 7-Zip / WinRAR /
+TortoiseGit 的标准做法。
+
+### ⚠️ 关于「一级菜单」，微软已经定性
+
+> 上下文菜单扩展必须使用 **IExplorerCommand** 接口来实现。实现 **IContextMenu** 的
+> 上下文菜单扩展将显示在**旧的上下文菜单**中。
+> —— MS Learn《Windows 应用开发最佳做法》
+
+也就是说：Win11 那个紧凑菜单**只**承载 `IExplorerCommand` + MSIX 包身份；
+`IContextMenu` 扩展只会出现在旧版菜单里。本项目实测也证伪了 MSIX 路线：
+
+| 试过的方案 | 结果 |
+|---|---|
+| MSIX 稀疏包 + `com:InProcessServer` | 注册报 `0xC00CE014 元素为意外元素`（MSIX 只允许 SurrogateServer） |
+| MSIX 稀疏包 + `com:SurrogateServer` | dllhost 挂死，Explorer 崩 `0xc0000005` |
+| 注册表 `ExplorerCommandHandler` | 只出现在「显示更多选项」里，且曾导致右键直接黑屏 |
+
+**结论**：想要「级联效果」+「右键直接可见」，唯一可靠的组合是
+**`IContextMenu` 级联扩展 + 打开经典完整右键菜单**。所以 `install` 会：
+
+1. 注册级联扩展（文件 `*` + 文件夹 `Directory`）
+2. 同时打开「经典完整右键菜单」（`classic on`），让级联项直接可见，不用再点「显示更多选项」
+3. 顺手清掉历史遗留的 MSIX 包 / `IExplorerCommand` 扩展 / 静态菜单项，避免多套菜单打架
+
+代价是**所有软件**的右键菜单都会变成 Win10 风格。不想要的话 `classic off` 就能还原
+（那样本工具的菜单就回到「显示更多选项」里了）。
 
 ```bat
-FileConverter.exe install              :: 装（自动选最佳方案）
-FileConverter.exe install --cascade    :: 强制用经典级联菜单
-FileConverter.exe classic on|off       :: 手动切经典完整菜单 / 还原
-python tools\test_com.py               :: 验证 COM 对象（标题/图标/17 个子项）
+FileConverter.exe install          :: 装级联菜单 + 切经典菜单
+FileConverter.exe classic on|off   :: 手动切经典完整菜单 / 还原 Win11 默认
+FileConverter.exe check            :: 看各项注册状态
 ```
+
+**安装失败时会自动回退**成「单个菜单项 + 弹窗选单」模式（该模式下右键
+【转换文件格式】会弹一个窗口让你挑转换方案），功能不丢，只是没有级联效果。
 
 ### ffmpeg（音视频转换必需）
 
@@ -188,33 +221,55 @@ Windows 的静态右键动词对选中的每个文件各启动一个进程，每
 
 会删除：
 
-- `HKCU\Software\Classes\*\shell\FileConv`（父菜单，含兼容写法子项）
-- `HKCU\Software\...\Explorer\CommandStore\shell\FileConv.*`（全部子菜单项）
+- `HKCU\Software\Classes\CLSID\{B2C4E111-7A9D-4C3E-8F21-9D4E5A6B7C8D}`（级联扩展注册）
+- `HKCU\Software\Classes\{*|Directory}\shellex\ContextMenuHandlers\FileConv`（挂载点）
+- 历史遗留的 MSIX 包 / `IExplorerCommand` 扩展 / 静态菜单项
 - `%TEMP%\FileConv\`（多选合并产生的临时文件）
+- 顺带把菜单样式还原成 Windows 11 默认
 
 保留 `%APPDATA%\FileConverter\config.json`（自定义输出目录等设置）。
 想连配置一起删：`uninstall.bat /purge`。
 
 程序本身是**单文件 exe**，没有开机自启、没有计划任务、没有服务，删掉 exe 即彻底消失。
 
-### 菜单不显示？先用这个查
+### 菜单不显示？按这个顺序查
 
-注册表写对了 ≠ 菜单会出现。Windows 对级联菜单的写法挑得很，用这个脚本按 Explorer 的视角枚举：
+**第 1 步：看注册状态**
 
 ```bat
-pip install pywin32
-python tools\check_menu.py            :: 输出里能看到【转换文件格式】才算真的生效
-python tools\check_menu.py D:\a\b.png :: 也可以指定文件
+FileConverter.exe check
 ```
 
-> **踩过的坑（重要）**：父键上**绝对不能写 `SubCommands`**。
-> - 写成 `SubCommands="A;B;C"`：Explorer 会去 **HKLM** 的 `CommandStore` 找这几个名字，
->   HKCU 下写的找不到 → **整个菜单项直接消失**（这就是第一版"右键没反应"的原因）；
-> - 写成 `SubCommands=""`（空串）：官方文档里的"静态级联"写法，但在 Win11 build 26200 上**同样不显示**；
-> - 正确做法：父键只写 `MUIVerb` + `Icon`，子项挂在 `shell\<动词>\command` 下，Explorer 自动渲染成级联。
+会打印级联扩展是否注册、是否挂到了 `*` / `Directory` 上、DLL 能不能加载、
+经典菜单开没开。哪一项是「未注册」「✘」就说明卡在哪一步。
+
+**第 2 步：隔离验证 DLL 本身**（不写注册表、不碰 Explorer，最安全）
+
+```bat
+python tools\test_ctx.py
+```
+
+在自己的进程里把 Explorer 会做的事跑一遍：实例化 COM 对象 → 建菜单 → 数 17 个子项
+→ 校验文字 → `GetCommandString` 的 A/W 两版 → `InvokeCommand` 两种 ID 解释。
+全绿才说明 DLL 没问题。
+
+**第 3 步：真实右键看渲染**
+
+```bat
+python tools\test_menu_live.py
+```
+
+真的弹出一个资源管理器窗口并右键，然后从 `#32768` 菜单窗口里把菜单项全读出来，
+确认 `转换文件格式 ▶` 是带箭头的级联、展开后 17 项文字全对。
+
+> ⚠️ **别用 `FolderItem.Verbs()` 验证级联菜单** —— 它只枚举带命令 ID 的菜单项，
+> `MF_POPUP` 级联项没有命令 ID，**必然被跳过**，会给出"菜单里没有"的假阴性。
+> 这个坑我踩过，白白排查了半天。
 >
-> 这三种写法我在本机逐一实验过（`ZZAEmptySub` / `ZZBNoSub` / `ZZCSemicolon` 对照），
-> 只有第三种能出现在右键菜单里。`src/selftest.py` 现在也带了这个回归用例。
+> 另外：改完注册表或换 DLL 后，必须**重启资源管理器**才生效：
+> ```powershell
+> Stop-Process -Name explorer -Force     # 会自动重启，不用担心
+> ```
 
 ---
 
@@ -231,6 +286,28 @@ py -m pip install -r requirements.txt
 python tools\make_icon.py
 python -m PyInstaller --noconfirm --clean build.spec
 ```
+
+> ⚠️ **打包环境必须装齐 `python-docx` 和 `pdf2docx`**，否则会打出一个**只有 51 MB 的
+> 残废 exe**（缺了 docx，一碰 Word 转换就崩）。正确的成品约 **158 MB**。
+> **exe 体积就是依赖完整性的信号：≈158 MB 正常，≈51 MB 就是缺依赖。**
+>
+> 打包前确认一下：
+> ```bat
+> python -c "import docx, pdf2docx, PIL, pymupdf, PyInstaller; print('依赖齐全')"
+> ```
+> 另外 `FileConvCtx.dll` 要和 exe **放在同一个目录**（扩展靠 `GetModuleFileName`
+> 定位同级 exe），`打包exe.bat` 已经处理好了。
+
+级联扩展 DLL 需要重新编译时（MinGW gcc）：
+
+```bat
+python native\gen_verbs.py            :: 先从 SPECS 重新生成 native\verbs_gen.h
+gcc -shared -O2 -o native\FileConvCtx.dll native\FileConvCtx.c ^
+    -lole32 -lshell32 -lshlwapi -luuid
+```
+
+> MinGW 的 `ld` 不吃中文路径，源码要拷到纯 ASCII 目录（如 `C:\mgw\work`），
+> 并把 `TMP` / `TEMP` 也指到 ASCII 路径再编译。
 
 产物：`dist\FileConverter.exe`（单文件，本机实测 **150 MB**，其中 PyMuPDF 的 mupdf 引擎占大头）。
 
