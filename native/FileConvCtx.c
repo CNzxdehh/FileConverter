@@ -45,6 +45,11 @@ static const GUID IID_IShellExtInitL = {
     0x000214e8, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
 static const GUID IID_IContextMenuL = {
     0x000214e4, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+/* IContextMenu2 = {000214F0-...}、IContextMenu3 = {000214FF-...} */
+static const GUID IID_IContextMenu2L = {
+    0x000214f0, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const GUID IID_IContextMenu3L = {
+    0x000214ff, 0x0000, 0x0000, {0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
 
 #define EQ_GUID(a, b) (memcmp((a), (b), sizeof(GUID)) == 0)
 
@@ -197,8 +202,8 @@ static void Launch(const wchar_t *verb, PathList *pl) {
 
 /* ---- 对象：双 vtable 子对象 ---- */
 typedef struct _CtxObj {
-    const IContextMenuVtbl *lpCtx;      /* offset 0  —— IContextMenu 从这里开始 */
-    const IShellExtInitVtbl *lpShl;     /* offset 8  —— IShellExtInit 从这里开始 */
+    const IContextMenu3Vtbl *lpCtx;     /* offset 0 —— IContextMenu3 从这里开始 */
+    const IShellExtInitVtbl *lpShl;     /* offset 8 —— IShellExtInit 从这里开始 */
     LONG ref;
     PathList paths;
     UINT idCmdFirst;                    /* QueryContextMenu 拿到的起始 ID */
@@ -214,18 +219,27 @@ static ULONG STDMETHODCALLTYPE Shl_Release(IShellExtInit *This);
 static HRESULT STDMETHODCALLTYPE Shl_Initialize(IShellExtInit *This, PCIDLIST_ABSOLUTE,
                                                 IDataObject *, HKEY);
 
-static HRESULT STDMETHODCALLTYPE Ctx_QueryInterface(IContextMenu *This, REFIID riid, void **ppv);
-static ULONG STDMETHODCALLTYPE Ctx_AddRef(IContextMenu *This);
-static ULONG STDMETHODCALLTYPE Ctx_Release(IContextMenu *This);
-static HRESULT STDMETHODCALLTYPE Ctx_QueryContextMenu(IContextMenu *This, HMENU, UINT, UINT,
+static HRESULT STDMETHODCALLTYPE Ctx_QueryInterface(IContextMenu3 *This, REFIID riid, void **ppv);
+static ULONG STDMETHODCALLTYPE Ctx_AddRef(IContextMenu3 *This);
+static ULONG STDMETHODCALLTYPE Ctx_Release(IContextMenu3 *This);
+static HRESULT STDMETHODCALLTYPE Ctx_QueryContextMenu(IContextMenu3 *This, HMENU, UINT, UINT,
                                                       UINT, UINT);
-static HRESULT STDMETHODCALLTYPE Ctx_InvokeCommand(IContextMenu *This, CMINVOKECOMMANDINFO *);
-static HRESULT STDMETHODCALLTYPE Ctx_GetCommandString(IContextMenu *This, UINT_PTR, UINT,
+static HRESULT STDMETHODCALLTYPE Ctx_InvokeCommand(IContextMenu3 *This, CMINVOKECOMMANDINFO *);
+static HRESULT STDMETHODCALLTYPE Ctx_GetCommandString(IContextMenu3 *This, UINT_PTR, UINT,
                                                       UINT *, LPSTR, UINT);
+static HRESULT STDMETHODCALLTYPE Ctx_HandleMenuMsg(IContextMenu3 *This, UINT, WPARAM, LPARAM);
+static HRESULT STDMETHODCALLTYPE Ctx_HandleMenuMsg2(IContextMenu3 *This, UINT, WPARAM,
+                                                    LPARAM, LRESULT *);
 
-static const IContextMenuVtbl CtxVtbl = {
+/* ⚠️ 必须是 IContextMenu3Vtbl（不是 IContextMenuVtbl）：
+ * 外壳扩展插了 MF_POPUP 子菜单，Explorer 的菜单消息循环就要 QueryInterface
+ * 拿 IContextMenu2/3 的 HandleMenuMsg 把消息转下来。只实现 IContextMenu 的话，
+ * 子菜单能正常显示，但**点击完全没反应**（InvokeCommand 永远不被调用）——
+ * 这就是之前排查半天的故障。7-Zip / WinRAR 也都实现了这两个接口。 */
+static const IContextMenu3Vtbl CtxVtbl = {
     Ctx_QueryInterface, Ctx_AddRef, Ctx_Release,
     Ctx_QueryContextMenu, Ctx_InvokeCommand, Ctx_GetCommandString,
+    Ctx_HandleMenuMsg, Ctx_HandleMenuMsg2,
 };
 
 static const IShellExtInitVtbl ShlVtbl = {
@@ -234,7 +248,8 @@ static const IShellExtInitVtbl ShlVtbl = {
 
 static HRESULT QueryInterfaceCommon(CtxObj *o, REFIID riid, void **ppv) {
     if (!ppv) return E_POINTER;
-    if (EQ_GUID(riid, &IID_IUnknownL) || EQ_GUID(riid, &IID_IContextMenuL)) {
+    if (EQ_GUID(riid, &IID_IUnknownL) || EQ_GUID(riid, &IID_IContextMenuL)
+        || EQ_GUID(riid, &IID_IContextMenu2L) || EQ_GUID(riid, &IID_IContextMenu3L)) {
         *ppv = &o->lpCtx;                       /* 指向 offset 0 的子对象 */
         InterlockedIncrement(&o->ref);
         return S_OK;
@@ -248,13 +263,13 @@ static HRESULT QueryInterfaceCommon(CtxObj *o, REFIID riid, void **ppv) {
     return E_NOINTERFACE;
 }
 
-static HRESULT STDMETHODCALLTYPE Ctx_QueryInterface(IContextMenu *This, REFIID riid, void **ppv) {
+static HRESULT STDMETHODCALLTYPE Ctx_QueryInterface(IContextMenu3 *This, REFIID riid, void **ppv) {
     return QueryInterfaceCommon(FROM_CTX(This), riid, ppv);
 }
-static ULONG STDMETHODCALLTYPE Ctx_AddRef(IContextMenu *This) {
+static ULONG STDMETHODCALLTYPE Ctx_AddRef(IContextMenu3 *This) {
     return (ULONG)InterlockedIncrement(&FROM_CTX(This)->ref);
 }
-static ULONG STDMETHODCALLTYPE Ctx_Release(IContextMenu *This) {
+static ULONG STDMETHODCALLTYPE Ctx_Release(IContextMenu3 *This) {
     CtxObj *o = FROM_CTX(This);
     LONG r = InterlockedDecrement(&o->ref);
     if (r == 0) {
@@ -351,7 +366,7 @@ static const wchar_t *CatTitle(CatKind c) {
     }
 }
 
-static HRESULT STDMETHODCALLTYPE Ctx_QueryContextMenu(IContextMenu *This, HMENU hmenu,
+static HRESULT STDMETHODCALLTYPE Ctx_QueryContextMenu(IContextMenu3 *This, HMENU hmenu,
                                                       UINT indexMenu, UINT idCmdFirst,
                                                       UINT idCmdLast, UINT uFlags) {
     CtxObj *o = FROM_CTX(This);
@@ -413,7 +428,7 @@ static HRESULT STDMETHODCALLTYPE Ctx_QueryContextMenu(IContextMenu *This, HMENU 
     return MAKE_HRESULT(SEVERITY_SUCCESS, 0, (UINT)nshow);
 }
 
-static HRESULT STDMETHODCALLTYPE Ctx_InvokeCommand(IContextMenu *This,
+static HRESULT STDMETHODCALLTYPE Ctx_InvokeCommand(IContextMenu3 *This,
                                                    CMINVOKECOMMANDINFO *pici) {
     CtxObj *o = FROM_CTX(This);
     UINT raw;
@@ -449,7 +464,7 @@ static HRESULT STDMETHODCALLTYPE Ctx_InvokeCommand(IContextMenu *This,
 }
 
 /* 经典菜单会用它在状态栏显示提示，A/W 两个版本都得给，否则菜单项会变灰或没提示 */
-static HRESULT STDMETHODCALLTYPE Ctx_GetCommandString(IContextMenu *This, UINT_PTR idCmd,
+static HRESULT STDMETHODCALLTYPE Ctx_GetCommandString(IContextMenu3 *This, UINT_PTR idCmd,
                                                       UINT uType, UINT *pwReserved,
                                                       LPSTR pszName, UINT cchMax) {
     (void)This;
@@ -486,6 +501,28 @@ static HRESULT STDMETHODCALLTYPE Ctx_GetCommandString(IContextMenu *This, UINT_P
         return S_OK;
     }
     return E_NOTIMPL;
+}
+
+/* ---- IContextMenu2 / IContextMenu3 ----
+ * 只插了标准 MF_STRING 项（非 owner-draw），所以这里不需要真处理消息，
+ * 返回 S_FALSE 让系统走默认处理即可。
+ * ⚠️ 但这两个方法**必须存在**：Explorer 的菜单消息循环靠 QueryInterface
+ * 拿 IContextMenu2/3 才能把消息转给扩展。缺了它们，子菜单照样显示，
+ * 但点击永远不触发 InvokeCommand（表现为"按了没用"）。 */
+static HRESULT STDMETHODCALLTYPE Ctx_HandleMenuMsg(IContextMenu3 *This, UINT uMsg,
+                                                   WPARAM wParam, LPARAM lParam) {
+    (void)This; (void)wParam; (void)lParam;
+    DbgLog(L"HandleMenuMsg: uMsg=0x%04X", uMsg);
+    return S_FALSE;                 /* 未处理，交给默认窗口过程 */
+}
+
+static HRESULT STDMETHODCALLTYPE Ctx_HandleMenuMsg2(IContextMenu3 *This, UINT uMsg,
+                                                    WPARAM wParam, LPARAM lParam,
+                                                    LRESULT *pResult) {
+    (void)This; (void)wParam; (void)lParam;
+    DbgLog(L"HandleMenuMsg2: uMsg=0x%04X", uMsg);
+    if (pResult) *pResult = 0;
+    return S_FALSE;
 }
 
 /* ---- 类厂 ---- */
@@ -534,7 +571,7 @@ static HRESULT STDMETHODCALLTYPE Fact_CreateInstance(IClassFactory *This, IUnkno
     c->menu_built = FALSE;
 
     hr = QueryInterfaceCommon(c, riid, ppv);
-    Ctx_Release((IContextMenu *)&c->lpCtx);
+    Ctx_Release((IContextMenu3 *)&c->lpCtx);
     return hr;
 }
 static HRESULT STDMETHODCALLTYPE Fact_LockServer(IClassFactory *This, BOOL lock) {
