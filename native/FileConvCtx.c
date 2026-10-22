@@ -65,6 +65,8 @@ static const VerbDef kVerbs[] = {
 #include "verbs_gen.h"
 };
 static const int kVerbCount = (int)(sizeof(kVerbs) / sizeof(kVerbs[0]));
+/* C 里 static const int 不是编译期常量，不能当数组维度，用固定上限 */
+#define FC_MAX_VERBS 32
 
 /* ---- 调试日志（排查"点了没反应"用，确认完就关掉 FCCTX_DEBUG） ---- */
 #ifndef FCCTX_DEBUG
@@ -208,6 +210,8 @@ typedef struct _CtxObj {
     PathList paths;
     UINT idCmdFirst;                    /* QueryContextMenu 拿到的起始 ID */
     BOOL menu_built;                    /* 是否真的插过菜单（决定怎么解释 Invoke 的 ID） */
+    int show[FC_MAX_VERBS];             /* 实际插了哪几个动词（智能筛选后的结果） */
+    int nshow;                          /* 实际插了几项 */
 } CtxObj;
 
 #define FROM_CTX(p) ((CtxObj *)(p))
@@ -372,8 +376,8 @@ static HRESULT STDMETHODCALLTYPE Ctx_QueryContextMenu(IContextMenu3 *This, HMENU
     CtxObj *o = FROM_CTX(This);
     HMENU sub;
     int i, j;
-    int mask[kVerbCount];
-    int show[kVerbCount];
+    int mask[FC_MAX_VERBS];
+    int show[FC_MAX_VERBS];
     int nshow = 0;
     CatKind dominant = CAT_NONE;
     const wchar_t *title;
@@ -409,13 +413,22 @@ static HRESULT STDMETHODCALLTYPE Ctx_QueryContextMenu(IContextMenu3 *This, HMENU
     }
     if (nshow == 0) return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 0);
 
-    /* 2. 建级联子菜单 */
+    /* 2. 建级联子菜单
+     * ⚠️ 菜单项 ID 必须从 idCmdFirst 开始**连续编号**（0,1,2…），
+     *    因为 QueryContextMenu 的返回值告诉 Explorer「我占了 N 个 ID」，
+     *    Explorer 就认定这 N 个 ID 是 idCmdFirst ~ idCmdFirst+N-1。
+     *    早期版本用 idCmdFirst+show[i]（show[i] 是原动词索引 14/15/16），
+     *    结果菜单项 ID 是 31135-31137，而 Explorer 只认 31121-31123 →
+     *    ID 对不上，点击后 Explorer 认为不是我们的项，InvokeCommand 永远不被调用。
+     *    真正的动词索引存进 o->show[]，InvokeCommand 时再映射回去。 */
     sub = CreatePopupMenu();
     if (!sub) return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 0);
     for (i = 0; i < nshow; ++i) {
-        AppendMenuW(sub, MF_STRING, (UINT_PTR)(idCmdFirst + (UINT)show[i]),
+        AppendMenuW(sub, MF_STRING, (UINT_PTR)(idCmdFirst + (UINT)i),
                     kVerbs[show[i]].label);
     }
+    memcpy(o->show, show, sizeof(int) * (size_t)nshow);
+    o->nshow = nshow;
 
     title = CatTitle(dominant);
     InsertMenuW(hmenu, indexMenu, MF_BYPOSITION | MF_POPUP | MF_STRING,
@@ -426,6 +439,19 @@ static HRESULT STDMETHODCALLTYPE Ctx_QueryContextMenu(IContextMenu3 *This, HMENU
     DbgLog(L"QueryContextMenu: idCmdFirst=%u 路径数=%d 插入位置=%u 命中类别=%d 子项数=%d 标题=%s",
            idCmdFirst, o->paths.count, indexMenu, (int)dominant, nshow, title);
     return MAKE_HRESULT(SEVERITY_SUCCESS, 0, (UINT)nshow);
+}
+
+/* 把 Explorer 传进来的 ID 换算成 kVerbs 的索引；-1 表示不认 */
+static int MapId(CtxObj *o, UINT raw) {
+    if (o->menu_built && o->nshow > 0) {
+        if (raw >= o->idCmdFirst && raw < o->idCmdFirst + (UINT)o->nshow) {
+            return o->show[raw - o->idCmdFirst];        /* 绝对菜单 ID */
+        }
+        if (raw < (UINT)o->nshow) {
+            return o->show[raw];                        /* 相对偏移 */
+        }
+    }
+    return -1;
 }
 
 static HRESULT STDMETHODCALLTYPE Ctx_InvokeCommand(IContextMenu3 *This,
@@ -442,35 +468,33 @@ static HRESULT STDMETHODCALLTYPE Ctx_InvokeCommand(IContextMenu3 *This,
 
     /* ⚠️ 关键防坑：shell 传进来的低 16 位到底是「绝对菜单 ID」还是「相对 idCmdFirst
      *   的偏移」，不同宿主实现不一致（自己写的宿主通常传偏移，Explorer 实际传绝对 ID）。
-     *   搞反了的表现就是"点了没反应"。这里两种解释都接受，彻底消掉这个风险。 */
+     *   搞反了的表现就是"点了没反应"。这里两种解释都接受，彻底消掉这个风险。
+     *   另外菜单项 ID 是从 idCmdFirst 连续编号的，所以要先经 MapId 换算回
+     *   kVerbs 的索引（智能筛选后两者已经不一样了）。 */
     raw = LOWORD((UINT_PTR)pici->lpVerb);
-    if (o->menu_built && raw >= o->idCmdFirst
-        && raw < o->idCmdFirst + (UINT)kVerbCount) {
-        idx = (int)(raw - o->idCmdFirst);          /* 绝对 ID */
-        DbgLog(L"  → 按绝对 ID 解释：idx=%d", idx);
-    } else if (raw < (UINT)kVerbCount) {
-        idx = (int)raw;                            /* 相对偏移 */
-        DbgLog(L"  → 按相对偏移解释：idx=%d", idx);
-    }
-    if (idx < 0 || idx >= kVerbCount) {
+    idx = MapId(o, raw);
+    if (idx < 0) {
         DbgLog(L"  → 无法识别的 ID，放弃（raw=%u idCmdFirst=%u 项数=%d）",
-               raw, o->idCmdFirst, kVerbCount);
+               raw, o->idCmdFirst, o->nshow);
         return E_INVALIDARG;
     }
 
     DbgLog(L"  → 触发第 %d 项：%s（共 %d 个文件）", idx, kVerbs[idx].id, o->paths.count);
     Launch(kVerbs[idx].id, &o->paths);
-    return S_OK;
+    return S_OK;;
 }
 
 /* 经典菜单会用它在状态栏显示提示，A/W 两个版本都得给，否则菜单项会变灰或没提示 */
 static HRESULT STDMETHODCALLTYPE Ctx_GetCommandString(IContextMenu3 *This, UINT_PTR idCmd,
                                                       UINT uType, UINT *pwReserved,
                                                       LPSTR pszName, UINT cchMax) {
-    (void)This;
+    CtxObj *o = FROM_CTX(This);
+    int idx;
     (void)pwReserved;
     if (!pszName || cchMax == 0) return E_INVALIDARG;
-    if (idCmd >= (UINT_PTR)kVerbCount) return E_INVALIDARG;
+    /* 同样要经 MapId 换算：菜单项 ID 是连续编号的，和 kVerbs 索引已经不一样 */
+    idx = MapId(o, (UINT)idCmd);
+    if (idx < 0) return E_INVALIDARG;
     pszName[0] = 0;
 
     /* 校验：只回答"这个 id 合法吗"，不写内容 */
@@ -478,10 +502,10 @@ static HRESULT STDMETHODCALLTYPE Ctx_GetCommandString(IContextMenu3 *This, UINT_
 
     if (uType == GCS_VERBA || uType == GCS_VERBW) {
         if (uType == GCS_VERBA) {
-            WideCharToMultiByte(CP_ACP, 0, kVerbs[idCmd].id, -1, pszName, (int)cchMax, NULL, NULL);
+            WideCharToMultiByte(CP_ACP, 0, kVerbs[idx].id, -1, pszName, (int)cchMax, NULL, NULL);
         } else {
             wchar_t *w = (wchar_t *)pszName;
-            wcsncpy(w, kVerbs[idCmd].id, cchMax - 1);
+            wcsncpy(w, kVerbs[idx].id, cchMax - 1);
             w[cchMax - 1] = 0;
         }
         return S_OK;
@@ -489,7 +513,7 @@ static HRESULT STDMETHODCALLTYPE Ctx_GetCommandString(IContextMenu3 *This, UINT_
 
     if (uType == GCS_HELPTEXTA || uType == GCS_HELPTEXTW) {
         wchar_t tmp[256];
-        _snwprintf(tmp, 256, L"用 FileConverter 执行：%s", kVerbs[idCmd].label);
+        _snwprintf(tmp, 256, L"用 FileConverter 执行：%s", kVerbs[idx].label);
         tmp[255] = 0;
         if (uType == GCS_HELPTEXTA) {
             WideCharToMultiByte(CP_ACP, 0, tmp, -1, pszName, (int)cchMax, NULL, NULL);
