@@ -290,32 +290,127 @@ static HRESULT STDMETHODCALLTYPE Shl_Initialize(IShellExtInit *This, PCIDLIST_AB
     return o->paths.count > 0 ? S_OK : E_FAIL;
 }
 
+/* ---- 智能判断：按选中文件的类型，只列出相关的转换项 ---- */
+typedef enum {
+    CAT_NONE = 0, CAT_PDF, CAT_WORD, CAT_IMAGE, CAT_AUDIO, CAT_VIDEO
+} CatKind;
+
+#define CAT_MAX_VERBS 6
+
+static const struct { const wchar_t *ext; CatKind cat; } kExtCat[] = {
+    {L".pdf",  CAT_PDF},
+    {L".docx", CAT_WORD}, {L".doc", CAT_WORD}, {L".rtf", CAT_WORD},
+    {L".odt",  CAT_WORD}, {L".wps", CAT_WORD},
+    {L".png",  CAT_IMAGE}, {L".jpg", CAT_IMAGE}, {L".jpeg", CAT_IMAGE},
+    {L".bmp",  CAT_IMAGE}, {L".gif", CAT_IMAGE}, {L".webp", CAT_IMAGE},
+    {L".tif",  CAT_IMAGE}, {L".tiff", CAT_IMAGE}, {L".ico", CAT_IMAGE},
+    {L".mp3",  CAT_AUDIO}, {L".wav", CAT_AUDIO}, {L".flac", CAT_AUDIO},
+    {L".m4a",  CAT_AUDIO}, {L".aac", CAT_AUDIO}, {L".ogg", CAT_AUDIO},
+    {L".wma",  CAT_AUDIO}, {L".opus", CAT_AUDIO},
+    {L".mp4",  CAT_VIDEO}, {L".mov", CAT_VIDEO}, {L".mkv", CAT_VIDEO},
+    {L".avi",  CAT_VIDEO}, {L".flv", CAT_VIDEO}, {L".wmv", CAT_VIDEO},
+    {L".ts",   CAT_VIDEO}, {L".m4v", CAT_VIDEO}, {L".webm", CAT_VIDEO},
+    {NULL, CAT_NONE}
+};
+
+static CatKind CatOf(const wchar_t *path) {
+    const wchar_t *dot;
+    int i;
+    if (!path) return CAT_NONE;
+    dot = wcsrchr(path, L'.');
+    if (!dot) return CAT_NONE;
+    for (i = 0; kExtCat[i].ext; ++i) {
+        if (_wcsicmp(dot, kExtCat[i].ext) == 0) return kExtCat[i].cat;
+    }
+    return CAT_NONE;
+}
+
+/* 每类文件支持哪些转换（索引对应 kVerbs[] 顺序）
+ * ⚠️ 数组下标必须和 CatKind 一一对应，而 CAT_NONE 占了 0，
+ *    所以第 0 行是占位的空行。早期版本漏了它，导致每类都取到"下一类"的项
+ *    （PDF 显示 Word 的项、Word 显示图片的项……），而且越界读还会偶发崩溃。 */
+static const int kCatVerbs[][CAT_MAX_VERBS] = {
+    {-1, -1, -1, -1, -1, -1},   /* 0 = CAT_NONE   占位 */
+    {0, 2, 4, 5, -1, -1},       /* 1 = CAT_PDF    PDF→Word/TXT/PNG、多PDF合并 */
+    {1, 3, -1, -1, -1, -1},     /* 2 = CAT_WORD   Word→PDF、Word→TXT */
+    {6, 7, 8, 9, 10, 11},       /* 3 = CAT_IMAGE  →PNG/JPG/WEBP/PDF、多图合并、压缩 */
+    {12, 13, -1, -1, -1, -1},   /* 4 = CAT_AUDIO  →MP3、→WAV */
+    {14, 15, 16, -1, -1, -1},   /* 5 = CAT_VIDEO  提取音频、→MP4、→GIF */
+};
+#define CAT_KINDS 6
+
+/* 只按主导类别命名；多选混类型时退回通用名 */
+static const wchar_t *CatTitle(CatKind c) {
+    switch (c) {
+    case CAT_PDF:   return L"转换 PDF";
+    case CAT_WORD:  return L"转换 Word";
+    case CAT_IMAGE: return L"转换图片";
+    case CAT_AUDIO: return L"转换音频";
+    case CAT_VIDEO: return L"转换视频";
+    default:        return L"转换文件格式";
+    }
+}
+
 static HRESULT STDMETHODCALLTYPE Ctx_QueryContextMenu(IContextMenu *This, HMENU hmenu,
                                                       UINT indexMenu, UINT idCmdFirst,
                                                       UINT idCmdLast, UINT uFlags) {
     CtxObj *o = FROM_CTX(This);
     HMENU sub;
-    int i;
+    int i, j;
+    int mask[kVerbCount];
+    int show[kVerbCount];
+    int nshow = 0;
+    CatKind dominant = CAT_NONE;
+    const wchar_t *title;
 
     (void)idCmdLast;
     if (uFlags & CMF_DEFAULTONLY) return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 0);
     if (o->paths.count == 0) return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 0);
 
-    sub = CreatePopupMenu();
-    if (!sub) return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 0);
-
-    for (i = 0; i < kVerbCount; ++i) {
-        AppendMenuW(sub, MF_STRING, (UINT_PTR)(idCmdFirst + (UINT)i), kVerbs[i].label);
+    /* 1. 按文件类型算可用集合（多选取并集） */
+    memset(mask, 0, sizeof(mask));
+    for (i = 0; i < o->paths.count; ++i) {
+        CatKind c = CatOf(o->paths.items[i]);
+        if (c == CAT_NONE) continue;
+        for (j = 0; j < CAT_MAX_VERBS && kCatVerbs[c][j] >= 0; ++j) {
+            mask[kCatVerbs[c][j]] = 1;
+        }
+    }
+    /* 只要有一个文件识别不了类型，就退回"全列"，免得右键 .txt 时菜单空了 */
+    for (i = 0; i < o->paths.count; ++i) {
+        if (CatOf(o->paths.items[i]) == CAT_NONE) {
+            for (j = 0; j < kVerbCount; ++j) mask[j] = 1;
+            break;
+        }
+    }
+    /* 主导类别：取第一个能识别的文件（多选混类型时用第一个的，标题够用） */
+    for (i = 0; i < o->paths.count; ++i) {
+        dominant = CatOf(o->paths.items[i]);
+        if (dominant != CAT_NONE) break;
     }
 
+    for (i = 0; i < kVerbCount; ++i) {
+        if (mask[i]) show[nshow++] = i;
+    }
+    if (nshow == 0) return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 0);
+
+    /* 2. 建级联子菜单 */
+    sub = CreatePopupMenu();
+    if (!sub) return MAKE_HRESULT(SEVERITY_SUCCESS, 0, 0);
+    for (i = 0; i < nshow; ++i) {
+        AppendMenuW(sub, MF_STRING, (UINT_PTR)(idCmdFirst + (UINT)show[i]),
+                    kVerbs[show[i]].label);
+    }
+
+    title = CatTitle(dominant);
     InsertMenuW(hmenu, indexMenu, MF_BYPOSITION | MF_POPUP | MF_STRING,
-                (UINT_PTR)sub, L"转换文件格式");
+                (UINT_PTR)sub, title);
 
     o->idCmdFirst = idCmdFirst;
     o->menu_built = TRUE;
-    DbgLog(L"QueryContextMenu: idCmdFirst=%u 路径数=%d 插入位置=%u",
-           idCmdFirst, o->paths.count, indexMenu);
-    return MAKE_HRESULT(SEVERITY_SUCCESS, 0, (UINT)kVerbCount);
+    DbgLog(L"QueryContextMenu: idCmdFirst=%u 路径数=%d 插入位置=%u 命中类别=%d 子项数=%d 标题=%s",
+           idCmdFirst, o->paths.count, indexMenu, (int)dominant, nshow, title);
+    return MAKE_HRESULT(SEVERITY_SUCCESS, 0, (UINT)nshow);
 }
 
 static HRESULT STDMETHODCALLTYPE Ctx_InvokeCommand(IContextMenu *This,
